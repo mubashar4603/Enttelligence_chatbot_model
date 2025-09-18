@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Welcome to HVAC Assist</title>
+</head>
+<body style="background-color:#f4f4f4; margin:0; padding:0;">
+    <table cellpadding="0" cellspacing="0" border="0" width="100%">
+        <tr>
+            <td align="center">
+                <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color:#fff; margin:20px auto; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,0.05);">
+                    <tr>
+                        <td style="padding:24px; font-family:Arial, sans-serif; font-size:16px; color:#222;">
+                            <p>Hi {{ first_name }},</p>
+                            <p>
+                                You’ve been registered as a user of the HVAC Assist tool — your intelligent assistant designed to help you solve technical queries, access manuals, and get quick support while on-site.
+                            </p>
+                            <p><strong>Login Details:</strong></p>
+                            <p>🔗 Login URL: <a href="{{ login_url }}">{{ login_url }}</a><br>
+                            👤 Username: {{ username }}<br>
+                            🔐 Temporary Password: {{ temp_password }}</p>
+                            <p>Please log in as soon as possible and change your password once you’re in.</p>
+                            <p>
+                                By logging in, you agree to use the assistant responsibly and understand that all queries may be monitored for quality and improvement purposes. Access is for authorized internal use only.
+                            </p>
+                            <p>
+                                If you have any issues accessing your account, please speak to your team lead or contact the support admin.
+                            </p>
+                            <p>Best regards,<br>HVAC Assist Team</p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
