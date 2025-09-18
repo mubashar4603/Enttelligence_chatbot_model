@@ -220,6 +220,8 @@ CSRF_TRUSTED_ORIGINS = os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',') if os.ge
     'https://7aef6f1c9a16.ngrok-free.app',
     'http://18.220.241.7',
     'https://18.220.241.7',
+    'http://192.168.1.4:3000',
+    'http://192.168.1.4:5173',
 ]
 
 CORS_ORIGIN_WHITELIST = os.getenv('CORS_ORIGIN_WHITELIST', '').split(',') if os.getenv('CORS_ORIGIN_WHITELIST') else [
@@ -233,6 +235,8 @@ CORS_ORIGIN_WHITELIST = os.getenv('CORS_ORIGIN_WHITELIST', '').split(',') if os.
      'https://18.220.241.7',
      'https://hvac-delta.vercel.app',
      'https://7aef6f1c9a16.ngrok-free.app',
+     'http://192.168.1.4:3000',
+    'http://192.168.1.4:5173',
  ]
 # print(CORS_ORIGIN_WHITELIST)
 #CORS_ALLOW_CREDENTIALS = True

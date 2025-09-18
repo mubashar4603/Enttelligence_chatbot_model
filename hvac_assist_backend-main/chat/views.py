@@ -27,23 +27,21 @@ class MessageViewSet(viewsets.ModelViewSet):
         return queryset
 
     def query_openai(self, prompt):
-        # For OpenAI Python SDK v1.x, use OpenAI() and set API key in env
-        client = OpenAI()
+        from ai.open_llm import ai_call_open_source
         try:
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": "You are an HVAC assistant. Use the following reference documents to answer the user's question."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=256,
-                temperature=0.7,
+            system_prompt = "You are an HVAC assistant. Use the following reference documents to answer the user's question."
+            reply = ai_call_open_source(
+                system_prompt=system_prompt,
+                user_prompt=prompt,
+                max_tokens=1000,
+                temprature=0.3,
+                model="command-r7b:latest"
             )
-            reply = response.choices[0].message.content.strip()
-            token_usage = response.usage.total_tokens if response.usage else None
+            # Since Ollama doesn't provide token usage, we'll set it to None
+            token_usage = None
             return reply, token_usage
         except Exception as e:
-            return f"[OpenAI API Error]: {e}", None
+            return f"[Model API Error]: {e}", None
 
     def create(self, request, *args, **kwargs):
         t0 = time.time()
@@ -118,8 +116,16 @@ class ChatAPIView(APIView):
             return Response({"error": "Message field is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # Call your AI agent
-            bot_reply = ai_question_answer_agent(user_message)
+            # Call the open source model
+            from ai.open_llm import ai_call_open_source
+            system_prompt = "You are an HVAC assistant. Help the user with their HVAC-related questions."
+            bot_reply = ai_call_open_source(
+                system_prompt=system_prompt,
+                user_prompt=user_message,
+                max_tokens=1000,
+                temprature=0.3,
+                model="command-r7b:latest"
+            )
 
             return Response({
                 "user_message": user_message,
