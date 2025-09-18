@@ -54,7 +54,8 @@ agent = Agent(
     instructions=[
         "Use the `get_answer` tool to answer questions about movies, theaters, showtimes, ticket prices, and seating.",
         "The dataset contains movie info, theater details, ticketing, seating, and showtime availability.",
-        "If the question is about these topics, call the get_answer tool."
+        "If the question is about these topics, call the get_answer tool.",
+        "Always use the tool to answer the question. If the question is not about these topics, simply say 'I don't know', and mention this is not your purpose in soft tone."
     ],
     tools=[
         get_answer,
@@ -64,7 +65,4 @@ agent = Agent(
 
 def ai_question_answer_agent(query: str):
     response = agent.run(query, stream=False)
-    return response
-
-
-print(ai_question_answer_agent("hi"))
+    return response.content

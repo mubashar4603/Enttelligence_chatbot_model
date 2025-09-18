@@ -9,6 +9,7 @@ from openai import OpenAI
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.views import APIView
 
+from ai.agent import ai_question_answer_agent
 import time
 
 from rest_framework.permissions import IsAuthenticated
@@ -27,21 +28,27 @@ class MessageViewSet(viewsets.ModelViewSet):
         return queryset
 
     def query_openai(self, prompt):
-        from ai.open_llm import ai_call_open_source
         try:
-            system_prompt = "You are an HVAC assistant. Use the following reference documents to answer the user's question."
-            reply = ai_call_open_source(
-                system_prompt=system_prompt,
-                user_prompt=prompt,
-                max_tokens=1000,
-                temprature=0.3,
-                model="command-r7b:latest"
-            )
-            # Since Ollama doesn't provide token usage, we'll set it to None
-            token_usage = None
-            return reply, token_usage
+            reply = ai_question_answer_agent(prompt)
         except Exception as e:
             return f"[Model API Error]: {e}", None
+        # from ai.open_llm import ai_call_open_source
+        # try:
+        #     system_prompt = "You are an HVAC assistant. Use the following reference documents to answer the user's question."
+        #     reply = ai_call_open_source(
+        #         system_prompt=system_prompt,
+        #         user_prompt=prompt,
+        #         max_tokens=1000,
+        #         temprature=0.3,
+        #         model="command-r7b:latest"
+        #     )
+        #     # Since Ollama doesn't provide token usage, we'll set it to None
+        #     token_usage = None
+        #     return reply, token_usage
+        # except Exception as e:
+        #     return f"[Model API Error]: {e}", None
+
+
 
     def create(self, request, *args, **kwargs):
         t0 = time.time()
@@ -118,14 +125,8 @@ class ChatAPIView(APIView):
         try:
             # Call the open source model
             from ai.open_llm import ai_call_open_source
-            system_prompt = "You are an HVAC assistant. Help the user with their HVAC-related questions."
-            bot_reply = ai_call_open_source(
-                system_prompt=system_prompt,
-                user_prompt=user_message,
-                max_tokens=1000,
-                temprature=0.3,
-                model="command-r7b:latest"
-            )
+            # system_prompt = "You are an HVAC assistant. Help the user with their HVAC-related questions."
+            bot_reply = ai_question_answer_agent(user_message)
 
             return Response({
                 "user_message": user_message,
