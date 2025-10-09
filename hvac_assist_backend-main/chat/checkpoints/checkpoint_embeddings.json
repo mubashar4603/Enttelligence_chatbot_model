@@ -1,0 +1,11 @@
+{
+  "timestamp": "2025-10-04T07:38:07.567991",
+  "step": "embeddings",
+  "data": {
+    "embeddings_shape": [
+      1000000,
+      768
+    ],
+    "embedding_size_mb": 2929.6875
+  }
+}

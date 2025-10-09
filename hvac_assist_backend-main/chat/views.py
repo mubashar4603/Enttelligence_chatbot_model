@@ -1,6 +1,6 @@
 from rest_framework import viewsets, status
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from .models import Conversation, Message
 from .serializers import MessageSerializer, ConversationSerializer
 from .reference_loader import search_related_chunks
@@ -8,9 +8,9 @@ from rest_framework import generics, permissions
 from openai import OpenAI
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.views import APIView
-
+from django.http import StreamingHttpResponse
 import time
-
+from .rag_service import get_rag_service
 from rest_framework.permissions import IsAuthenticated
 
 class MessageViewSet(viewsets.ModelViewSet):
@@ -100,31 +100,156 @@ class MessageViewSet(viewsets.ModelViewSet):
         return Response({
             'conversation_id': conversation.id,
             'message': bot_serializer.data
-    }, status=status.HTTP_201_CREATED)
+        }, status=status.HTTP_201_CREATED)
 class UserConversationsAPIView(generics.ListAPIView):
     serializer_class = ConversationSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         return Conversation.objects.filter(user=self.request.user).order_by('-updated_at')
-    
+
 
 class ChatAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+   # permission_classes = [AllowAny]
+   pass
 
-    def post(self, request):
-        user_message = request.data.get("message")
-        if not user_message:
-            return Response({"error": "Message field is required"}, status=status.HTTP_400_BAD_REQUEST)
+    #def post(self, request):
+     #   """Stream chat message with RAG"""
+
+      #  user_message = request.data.get("message", "").strip()
+       # if not user_message:
+        #    return StreamingHttpResponse("Error: Message required", status=400)
+
+        #rag_service = get_rag_service()
+
+        #def token_stream():
+         #   try:
+                # reset tokens for this request
+          #      rag_service.streaming_handler.reset()
+
+                # invoke LLM (tokens stream into handler)
+           #     rag_service.llm.invoke(user_message)
+
+                # yield tokens one by one
+            #    for token in rag_service.streaming_handler.tokens:
+             #       yield token
+            #except Exception as e:
+             #   yield f"Error: {str(e)}"
+
+        #return StreamingHttpResponse(token_stream(), content_type="text/plain")
+
+
+
+class MessageViewSet(viewsets.ModelViewSet):
+    queryset = Message.objects.all()
+    serializer_class = MessageSerializer
+    permission_classes = [IsAuthenticated]
+    pagination_class = PageNumberPagination
+
+    def get_queryset(self):
+        queryset = Message.objects.filter(conversation__user=self.request.user)
+        conversation_id = self.request.query_params.get('conversation_id')
+        if conversation_id:
+            queryset = queryset.filter(conversation_id=conversation_id)
+        return queryset
+
+    def query_rag_llm(self, prompt):
+        """
+        Use RAG LLM service instead of OpenAI API.
+        This collects all tokens into a single response (not streamed to client).
+        """
+        rag_service = get_rag_service()
+        rag_service.streaming_handler.reset()
 
         try:
-            # Call your AI agent
-            bot_reply = ai_question_answer_agent(user_message)
+            # Invoke the LLM (tokens stream into handler)
+            rag_service.llm.invoke(prompt)
+            # Collect all tokens into one string
+            reply = "".join(rag_service.streaming_handler.tokens).strip()
+            return reply
+        except Exception as e:
+            return f"[RAG LLM Error]: {str(e)}"
+    def query_rag_with_fallback(self, user_query):
+        """
+        Query RAG. If relevant docs found, use RAG.
+        If not, fall back to LLM directly.
+        """
+        rag_service = get_rag_service()
+    
+        try:
+        # Step 1: Retrieve from RAG
+            result = rag_service.query(user_query)
+            matches = result.get("matches", [])
 
-            return Response({
-                "user_message": user_message,
-                "bot_reply": bot_reply
-            }, status=status.HTTP_200_OK)
+            if matches and len(matches) > 0:
+            # 🔹 Use RAG-generated answer if available
+                answer = result.get("answer")
+                if answer:
+                    return answer.strip()
+        
+        # Step 2: If no matches or no useful answer → fallback to base LLM
+            print("⚠️ No RAG context found. Falling back to direct LLM response...")
+            rag_service.streaming_handler.reset()
+            rag_service.llm.invoke(user_query)
+            llm_reply = "".join(rag_service.streaming_handler.tokens).strip()
+            return llm_reply or "I'm sorry, I couldn’t generate a response."
 
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            print(f"[RAG Pipeline Error]: {str(e)}")
+            return "I'm sorry, I ran into an issue while processing your query."
+	
+    def create(self, request, *args, **kwargs):
+        t0 = time.time()
+        data = request.data.copy()
+        data['sender'] = 'user'
+
+        conversation_id = data.get('conversation') or data.get('conversation_id')
+        new_conversation = False
+
+        # Get or create conversation
+        if conversation_id:
+            try:
+                conversation = Conversation.objects.get(id=conversation_id, user=request.user)
+            except Conversation.DoesNotExist:
+                return Response(
+                    {'detail': 'Conversation not found or does not belong to user.'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        else:
+            conversation = Conversation.objects.create(user=request.user)
+            new_conversation = True
+
+        data['conversation'] = conversation.id
+
+        # Save user message
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        message = serializer.save()
+
+        # Set conversation title if first message
+        if new_conversation:
+            first_line = message.content.strip().splitlines()[0]
+            title = first_line[:50].rstrip('.!?')
+            conversation.title = title or "Untitled Conversation"
+            conversation.save()
+
+        # 🔹 Use the RAG pipeline here
+        rag_service = get_rag_service()
+        result = rag_service.query(message.content)
+        bot_reply = result.get("answer", "I’m sorry, I couldn’t generate a response.")
+       # bot_reply = self.query_rag_with_fallback(message.content)
+
+        # Save bot message in DB
+        bot_message = Message.objects.create(
+            conversation=conversation,
+            sender='bot',
+            content=bot_reply,
+        )
+
+        bot_serializer = self.get_serializer(bot_message)
+        print(f"Timing: total={time.time() - t0:.2f}s")
+
+        return Response({
+            'conversation_id': conversation.id,
+            'message': bot_serializer.data
+        }, status=status.HTTP_201_CREATED)

@@ -1,0 +1,8 @@
+{
+  "timestamp": "2025-10-04T06:37:34.891107",
+  "step": "pinecone_upload",
+  "data": {
+    "index_name": "customer-database-vectors",
+    "vectors_uploaded": 10000
+  }
+}
