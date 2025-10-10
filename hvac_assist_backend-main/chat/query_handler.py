@@ -260,7 +260,7 @@ class QueryHandler:
                 return {
                     'type': 'error',
                     'error': 'Invalid analytical query',
-                    'message': 'Could not determine specific analysis type required. Please try a query focused on prices, seating, or showtimes.',
+                    'message': 'Could not find relevant information. Please rephrase your query to focus on prices, seating, or showtimes.',
                     'supported_analyses': [
                         'Popular showtimes and peak hours',
                         'Seating capacity and occupancy',
@@ -613,7 +613,7 @@ class QueryHandler:
         return {
             'type': 'error',
             'error': 'Could not determine appropriate analysis for query. Please try rephrasing with more specific terms.',
-            'message': 'Please try a more specific query focused on showtimes, seating, or pricing.',
+            'message': 'Could not find relevant information. Please rephrase your query to focus on showtimes, seating, or pricing.',
             'supported_analyses': [
                 'Popular showtimes and peak hours',
                 'Seating capacity and occupancy',
@@ -712,6 +712,13 @@ class QueryHandler:
     def handle_showtime_analysis(self):
         """Analyze showtime patterns"""
         try:
+            # Check if we have any movie data
+            if not Movie.objects.exists():
+                return {
+                    'error': 'No movie data available',
+                    'message': 'There is currently no movie data available for analysis.'
+                }
+            
             # Get showtime distribution
             showtime_data = Movie.objects.annotate(
                 show_hour=ExtractHour('time_sh')

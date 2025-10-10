@@ -77,28 +77,6 @@ class MessageViewSetTests(TestCase):
             source_flag="",
             last_updates=current_time,
             running_date=current_time.date()
-            theater_name="AMC Empire 25",
-            theater_address="234 W 42nd St",
-            theater_city="New York",
-            theater_state="NY",
-            theater_zip="10036",
-            country="USA",
-            studio_name="20th Century Studios",
-            genre="Action",
-            rating="PG-13",
-            auditorium="1",
-            movie_format="Digital",
-            language_format="English",
-            total_seats=200,
-            available=100,
-            reserved=100,
-            checkered=0,
-            actual_total_seats=200,
-            actual_available=100,
-            actual_reserved=100,
-            actual_checkered=0,
-            before_reserved=90,
-            on_reserved=10
         )
         Movie.objects.create(
             title="Dune",
@@ -141,29 +119,6 @@ class MessageViewSetTests(TestCase):
             source_flag="",
             last_updates=current_time,
             running_date=current_time.date()
-            circuit_name="AMC",
-            theater_name="AMC Empire 25",
-            theater_address="234 W 42nd St",
-            theater_city="New York",
-            theater_state="NY",
-            theater_zip="10036",
-            country="USA",
-            studio_name="Warner Bros",
-            genre="Sci-Fi",
-            rating="PG-13",
-            auditorium="2",
-            movie_format="Digital",
-            language_format="English",
-            total_seats=200,
-            available=120,
-            reserved=80,
-            checkered=0,
-            actual_total_seats=200,
-            actual_available=120,
-            actual_reserved=80,
-            actual_checkered=0,
-            before_reserved=70,
-            on_reserved=10
         )
             
         # Standard format movies
@@ -199,7 +154,15 @@ class MessageViewSetTests(TestCase):
             actual_reserved=60,
             actual_checkered=0,
             before_reserved=50,
-            on_reserved=10
+            on_reserved=10,
+            after_reserved=0,
+            seating_type="Standard",
+            amenities="",
+            ticket_availability=True,
+            is_ticketing=True,
+            source_flag="",
+            last_updates=datetime.now(timezone.utc),
+            running_date=datetime.now(timezone.utc).date()
         )
         
         Movie.objects.create(
@@ -234,7 +197,15 @@ class MessageViewSetTests(TestCase):
             actual_reserved=65,
             actual_checkered=0,
             before_reserved=55,
-            on_reserved=10
+            on_reserved=10,
+            after_reserved=0,
+            seating_type="Standard",
+            amenities="",
+            ticket_availability=True,
+            is_ticketing=True,
+            source_flag="",
+            last_updates=datetime.now(timezone.utc),
+            running_date=datetime.now(timezone.utc).date()
         )
 
     def make_request(self, message_content):

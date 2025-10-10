@@ -91,14 +91,18 @@ class RAGConfig:
     # Embedding model (must match embeddings_pipeline.py)
     EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
 
-    # Retrieval settings
-    TOP_K = 100  # Number of similar documents to retrieve
+    # Retrieval settings - Optimized for Llama3 8B (8K context)
+    TOP_K = 50  # Balanced retrieval for 8K context window
+    MAX_CONTEXT_DOCS = 40  # Maximum documents to include in context
+    MIN_RELEVANCE_SCORE = 0.7  # Filter low-relevance results
 
-    # LLM settings
+    # LLM settings - Optimized for Llama3 8B
     OLLAMA_MODEL = "llama3:8b"
-    OLLAMA_BASE_URL = "http://localhost:11434"  # Change if Ollama runs elsewhere
-    TEMPERATURE = 0.7  # Lower = more focused, Higher = more creative
-    MAX_TOKENS = 8192   # Maximum response length
+    OLLAMA_BASE_URL = "http://localhost:11434"
+    TEMPERATURE = 0.7  # Balanced creativity/accuracy  
+    MAX_TOKENS = 1024  # Response length (leave room in 8K context)
+    TOP_P = 0.9  # Nucleus sampling
+    REPEAT_PENALTY = 1.1  # Reduce repetition
 
 
 # ==================== STREAMING CALLBACK HANDLER ====================
@@ -255,10 +259,13 @@ class MovieRAGService:
                 base_url=self.config.OLLAMA_BASE_URL,
                 temperature=self.config.TEMPERATURE,
                 num_predict=self.config.MAX_TOKENS,
+                top_p=self.config.TOP_P,
+                repeat_penalty=self.config.REPEAT_PENALTY,
                 callbacks=[self.streaming_handler]
             )
 
             logger.info("   ✅ LLaMA setup complete (will connect on first query)")
+            logger.info(f"   Settings: temp={self.config.TEMPERATURE}, max_tokens={self.config.MAX_TOKENS}")
 
         except Exception as e:
             logger.error(f"   ❌ Failed to setup LLaMA: {e}")
@@ -267,26 +274,20 @@ class MovieRAGService:
     def retrieve_context(self, query, top_k=None):
         """
         Retrieve relevant documents from Pinecone based on query.
+        Optimized for Llama3 8B with relevance filtering.
 
         Process:
         1. Convert query to embedding vector
         2. Search Pinecone for similar vectors
-        3. Return top_k most similar documents with metadata
+        3. Filter by relevance score
+        4. Return top matches within context window limits
 
         Args:
             query (str): User's question
-            top_k (int, optional): Number of results to retrieve. 
-                                   Defaults to config.TOP_K (20)
+            top_k (int, optional): Number of results to retrieve
 
         Returns:
-            list: List of matches, each containing:
-                  - id: vector ID
-                  - score: similarity score (0-1)
-                  - metadata: document metadata (title, genre, etc.)
-
-        Example:
-            matches = self.retrieve_context("AMC New York movies")
-            print(matches[0]['metadata']['title'])  # "A Man Called Otto"
+            list: Filtered list of relevant matches
         """
         if top_k is None:
             top_k = self.config.TOP_K
@@ -295,18 +296,28 @@ class MovieRAGService:
             # Step 1: Generate embedding for query
             query_embedding = self.embedding_model.encode(
                 query,
-                normalize_embeddings=True  # Must match embeddings_pipeline.py
+                normalize_embeddings=True
             )
 
-            # Step 2: Search Pinecone
+            # Step 2: Search Pinecone with extra buffer
             results = self.pinecone_index.query(
                 vector=query_embedding.tolist(),
-                top_k=top_k,
+                top_k=min(top_k * 2, 100),  # Get 2x for filtering
                 include_metadata=True
             )
 
-            # Step 3: Return matches
-            return results['matches']
+            # Step 3: Filter by relevance score
+            filtered_matches = [
+                match for match in results['matches']
+                if match['score'] >= self.config.MIN_RELEVANCE_SCORE
+            ]
+
+            # Step 4: Limit to context window capacity
+            final_matches = filtered_matches[:self.config.MAX_CONTEXT_DOCS]
+            
+            logger.info(f"   Retrieved: {len(results['matches'])} → Filtered: {len(filtered_matches)} → Final: {len(final_matches)}")
+
+            return final_matches
 
         except Exception as e:
             logger.error(f"❌ Error retrieving context: {e}")
@@ -398,41 +409,59 @@ class MovieRAGService:
             matches = self.retrieve_context(user_query, top_k)
             logger.info(f"   ✅ Retrieved {len(matches)} documents")
 
-            # Handle case when no matches found
-            if not matches:
-                logger.warning("   ⚠️  No relevant documents found in vector store")
-                context = "No specific movie theater information found in the database. Using general knowledge to assist."
+            # Step 2: Format context
+            logger.info("📝 Formatting context...")
+            
+            if not matches or len(matches) == 0:
+                # No specific theater data, but we can still help with general movie knowledge
+                logger.info("   ℹ️  No specific theater data found, using general movie knowledge")
+                context = "No specific theater showtimes or booking information available in the database for this query. However, you can provide helpful general information about movies, theaters, and cinema from your knowledge base."
             else:
                 context = self.format_context(matches)
 
-            # Step 2: Format context
-            logger.info("📝 Formatting context...")
-            context = self.format_context(matches)
+            # Step 3: Create optimized Llama3 prompt
+            logger.info("🎯 Creating Llama3-optimized prompt...")
+            
+            # Llama3 Chat Template with Entelligence branding
+            prompt_template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
-            # Step 3: Create prompt
-            logger.info("🎯 Creating prompt...")
-            prompt_template = """
-## System Prompt
-You are a helpful assistant for a movie ticketing system. You must answer the user's question only using the information provided below.
+You are Entelligence AI Assistant, an intelligent movie and cinema expert designed to help users with all their movie-related questions. You combine both specific theater data with comprehensive movie knowledge to provide the best assistance.
 
-## RETRIEVED INFORMATION:
+**Your Identity:**
+- You are Entelligence AI Assistant, a specialized movie and theater AI
+- You have access to real-time theater data AND extensive movie knowledge
+- You're knowledgeable about movies, actors, directors, genres, and cinema history
+- You're friendly, conversational, and always helpful
+
+**Response Guidelines:**
+1. **Always Be Helpful**: Never say you don't have information. Use your movie knowledge!
+2. **Be Comprehensive**: Provide 3-5 detailed, informative sentences
+3. **Be Natural**: Write conversationally and engagingly
+4. **Use Theater Data When Available**: Prioritize specific showtimes, prices, and availability
+5. **Supplement with Knowledge**: Add context about movies, actors, genres, or cinema
+6. **Be Practical**: Include actionable information and recommendations
+
+**Response Approach:**
+- If theater data is available: Use it and enhance with movie knowledge
+- If theater data is limited: Provide helpful movie information and general guidance
+- Always provide value: Share insights, recommendations, or interesting facts
+- Include specific details: Prices, times, formats, cast, directors, etc.
+- End with helpful suggestions or next steps
+
+**Example Responses:**
+- For showtimes: Include specific data + movie context
+- For movie questions: Share plot, cast, reviews, and general availability
+- For recommendations: Suggest based on genre, ratings, or popularity
+- For general questions: Use your extensive movie knowledge
+
+Remember: You're Entelligence AI Assistant - always knowledgeable, always helpful, never limited by data gaps!<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+## Available Theater Data:
 {context}
 
-## USER QUESTION:
-{question}
+## User Question:
+{question}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
-## INSTRUCTIONS:
-- Return to the point answer, don't make hallucination.
-- Answer only using the content from the retrieved information above.
-- Do NOT use any prior, external, or general knowledge.
-- If the retrieved information does not contain the answer, reply exactly with:
-- 👉 “I don’t have any information about that.”
-- Do not explain why you don’t have the data.
-- Do not suggest websites, apps, or external sources.
-- Do not make assumptions, predictions, or fabricated answers.
-- Keep the response clear, natural, and concise.
-
-            
 """
 
             prompt = PromptTemplate(
@@ -458,18 +487,18 @@ You are a helpful assistant for a movie ticketing system. You must answer the us
             except Exception as e:
                 logger.error(f"   ❌ LLM generation failed: {e}")
                 logger.error(f"   💡 Check: Ollama is running, model is pulled")
-                # Provide a more comprehensive response
-                answer = """I apologize for the technical difficulty I'm experiencing. Let me explain how I can help you when I'm back to normal operation:
+                # Provide a helpful branded response
+                answer = """Hello! I'm Entelligence AI Assistant, your movie and cinema expert. I'm experiencing a brief technical issue, but I'm designed to help you with:
 
-1. Theater Information: I can provide detailed information about movie theaters, including locations, amenities, seating options, and special formats like IMAX or Dolby.
+**Movie Information**: I can share details about any movie including plot, cast, director, genre, ratings, and reviews.
 
-2. Movie Details: I can share comprehensive information about movies, including plot summaries, cast and crew details, reviews, and interesting behind-the-scenes facts.
+**Theater Services**: I provide information about showtimes, ticket prices, seating availability, and theater formats (IMAX, Dolby, 3D, etc.).
 
-3. Showtimes and Tickets: I can help you find available showtimes, check seat availability, and provide detailed pricing information, including special discounts and premium format prices.
+**Recommendations**: Based on your preferences, I can suggest movies, optimal viewing formats, and the best times to catch a show.
 
-4. Recommendations: Based on your interests, I can suggest movies that are currently showing and recommend the best viewing experience for each film.
+**Cinema Knowledge**: Ask me about actors, directors, film history, award winners, upcoming releases, and more!
 
-Please try your question again in a moment when our system is fully operational. In the meantime, you can also check our website or mobile app for immediate assistance."""
+Please try your question again, and I'll do my best to assist you with comprehensive movie and theater information!"""
 
             # Step 5: Prepare response
             response = {
