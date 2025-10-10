@@ -1,0 +1,131 @@
+.ai/model/cuda_12.2.0_535.54.03_linux.run
+.ai/model/Llama-3.2-8B-Instruct-Q5_K_M.gguf
+
+.hvac_assist_backend-main/chat/enttelligence_10M_records.csv
+
+.hvac_assist_backend-main/.env
+
+*.pyc
+# Created by https://www.gitignore.io
+activate.bat
+static/compressed/*
+.idea/
+.venv
+media
+*.mp3
+celerybeat.pid
+celerybeat-schedule.bak
+celerybeat-schedule.dat
+celerybeat-schedule.dir
+celerybeat-schedule.db
+nohup.out
+staticfiles
+### OSX ###
+.DS_Store
+.AppleDouble
+.LSOverride
+qodana.yaml
+# Icon must end with two \r
+Icon
+scraper/outputs/*.csv
+*.log.*
+# Thumbnails
+._*
+
+# Files that might appear on external disk
+.Spotlight-V100
+.Trashes
+
+# Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+
+### Python ###
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+
+# Translations
+*.mo
+*.pot
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+
+### Django ###
+*.log
+*.pot
+*.pyc
+__pycache__/
+local_settings.py
+
+venv
+ai_calling_bot/.env
+db.sqlite3
+/celerybeat-schedule
+
+.vscode
+
+# Elastic Beanstalk Files
+.elasticbeanstalk/*
+!.elasticbeanstalk/*.cfg.yml
+!.elasticbeanstalk/*.global.yml
+
+.env
+
+production.yml
+patient.json
+
+data.json
+
+ai/
+NVIDIA-Linux-x86_64-535.104.05.run/
+NVIDIA-Linux-x86_64-535.183.01.run/
+NVIDIA-Linux-x86_64-535.183.01.run.1/
+NVIDIA-Linux-x86_64-535.183.01.run.2/

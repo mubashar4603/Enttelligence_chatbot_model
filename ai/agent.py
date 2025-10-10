@@ -2,28 +2,29 @@ from phi.agent import Agent
 from phi.model.openai import OpenAIChat
 from langchain_openai import ChatOpenAI
 from langchain_experimental.agents import create_csv_agent
+from langchain.agents.agent_types import AgentType
 import os
 from phi.model.ollama import Ollama
 
 os.environ['OPENAI_API_KEY'] = "key"
 
-
 llm = ChatOpenAI(
     model="cogito:8b",
-    temperature=0,
+    temperature=0.2,  # Lower temperature for more focused responses
     base_url="http://20.83.161.156:5001/v1",
     api_key="key"
 )
 
+# Create a specialized CSV agent for data analysis
 agent_executor = create_csv_agent(
     llm,
     "data/Movie_shows_2023.csv",
-    agent_type="openai-tools",
-     allow_dangerous_code=True,
-    verbose=True
-)
-
-def get_answer(question: str):
+    agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,  # Better for analytical tasks
+    verbose=True,
+    handle_parsing_errors=True,
+    max_iterations=5,  # Prevent infinite loops
+    allow_pandas_syntax=True  # Enable pandas operations for better data analysis
+)def get_answer(question: str):
     """
     Answer user questions about movies, theaters, and showtimes 
     using the cinema dataset.

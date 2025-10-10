@@ -10,8 +10,56 @@ SETUP:
 3. Copy this entire file to your Django app folder
 4. That's it! Django will auto-initialize at startup.
 
-USAGE IN VIEWS:
-    from .rag_service import get_rag_service
+USAGE IN VIEW## System Prompt
+You are an expert cinema and movie assistant for a theater ticketing system. Your responses should be comprehensive and engaging, combining both specific theater information and broad movie knowledge when appropriate.
+
+## RETRIEVED INFORMATION:
+{context}
+
+## USER QUESTION:
+{question}
+
+## INSTRUCTIONS:
+1. For theater-specific queries (showtimes, prices, seats, locations):
+   - Base your response on the retrieved information
+   - Provide detailed context about the theater experience
+   - Include relevant details about amenities, seating types, and special formats
+   - If exact information isn't available, suggest checking the website/app but also provide helpful general guidance
+   - Always include price ranges and seating availability when available
+   - Explain any special features or formats (IMAX, Dolby, etc.)
+
+2. For movie-related queries:
+   - Combine retrieved theater information with your knowledge base
+   - Provide rich context about the movie (genre, themes, notable aspects)
+   - Include relevant production details, director, main cast
+   - Discuss critical reception and audience feedback when relevant
+   - Connect your response to available showtimes and formats when possible
+   - Share interesting facts or context that enhance the movie-going experience
+
+3. Response Structure:
+   - Start with a direct answer to the question
+   - Provide supporting details and context (2-3 paragraphs)
+   - Include specific theater/showing information when available
+   - Add relevant recommendations or alternatives
+   - Conclude with actionable information or next steps
+   - Maintain a natural, conversational, yet informative tone
+
+4. Quality Guidelines:
+   - Aim for comprehensive responses (3-5 sentences minimum per topic)
+   - Balance factual information with engaging delivery
+   - Be precise about theater-specific details
+   - Include both practical information and interesting context
+   - Stay relevant and focused while being thorough
+   - Acknowledge data limitations honestly but helpfully
+   - Avoid overly technical language unless specifically asked
+
+5. When handling uncertainty:
+   - Acknowledge what you do know first
+   - Explain what information is not available
+   - Provide helpful alternatives or suggestions
+   - Share relevant general knowledge or recommendations
+   - Maintain a confident yet honest tone
+   - Guide users toward useful next stepsrvice import get_rag_service
 
     rag_service = get_rag_service()
     result = rag_service.query("your question here")
@@ -352,12 +400,10 @@ class MovieRAGService:
 
             # Handle case when no matches found
             if not matches:
-                logger.warning("   ⚠️  No relevant documents found")
-                return {
-                    'answer': "I couldn't find any relevant information for your query. Please try rephrasing your question.",
-                    'sources': [],
-                    'retrieved_count': 0
-                }
+                logger.warning("   ⚠️  No relevant documents found in vector store")
+                context = "No specific movie theater information found in the database. Using general knowledge to assist."
+            else:
+                context = self.format_context(matches)
 
             # Step 2: Format context
             logger.info("📝 Formatting context...")
@@ -412,7 +458,18 @@ You are a helpful assistant for a movie ticketing system. You must answer the us
             except Exception as e:
                 logger.error(f"   ❌ LLM generation failed: {e}")
                 logger.error(f"   💡 Check: Ollama is running, model is pulled")
-                answer = "I encountered an error while generating the response. Please make sure Ollama is running and try again."
+                # Provide a more comprehensive response
+                answer = """I apologize for the technical difficulty I'm experiencing. Let me explain how I can help you when I'm back to normal operation:
+
+1. Theater Information: I can provide detailed information about movie theaters, including locations, amenities, seating options, and special formats like IMAX or Dolby.
+
+2. Movie Details: I can share comprehensive information about movies, including plot summaries, cast and crew details, reviews, and interesting behind-the-scenes facts.
+
+3. Showtimes and Tickets: I can help you find available showtimes, check seat availability, and provide detailed pricing information, including special discounts and premium format prices.
+
+4. Recommendations: Based on your interests, I can suggest movies that are currently showing and recommend the best viewing experience for each film.
+
+Please try your question again in a moment when our system is fully operational. In the meantime, you can also check our website or mobile app for immediate assistance."""
 
             # Step 5: Prepare response
             response = {

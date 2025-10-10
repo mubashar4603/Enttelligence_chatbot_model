@@ -8,10 +8,49 @@ from rest_framework import generics, permissions
 from openai import OpenAI
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.views import APIView
-from django.http import StreamingHttpResponse
+from django.http import StreamingHttpResponse, JsonResponse
 import time
+import json
 from .rag_service import get_rag_service
+from .query_handler import QueryHandler
 from rest_framework.permissions import IsAuthenticated
+
+
+class ChatAPIView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        """Handle chat messages with integrated RAG and database queries"""
+        user_message = request.data.get("message", "").strip()
+        if not user_message:
+            return Response({"error": "Message required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            # Initialize QueryHandler with RAG service
+            rag_service = get_rag_service()
+            query_handler = QueryHandler(rag_service)
+
+            # Process the query
+            response = query_handler.process_query(user_message)
+
+            # Return the response
+            return Response({
+                "message": response.get("message"),
+                "type": response.get("type"),
+                "data": response.get("data"),
+                "sources": response.get("sources")
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response(
+                {"error": f"An error occurred: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+
+
+
 
 class MessageViewSet(viewsets.ModelViewSet):
     queryset = Message.objects.all()
@@ -47,13 +86,16 @@ class MessageViewSet(viewsets.ModelViewSet):
 
     def create(self, request, *args, **kwargs):
         t0 = time.time()
-        data = request.data.copy()
-        data['sender'] = 'user'
-        conversation_id = data.get('conversation') or data.get('conversation_id')
-        conversation = None
-        new_conversation = False
+        from django.db import transaction
+        
+        with transaction.atomic():
+            data = request.data.copy()
+            data['sender'] = 'user'
+            conversation_id = data.get('conversation') or data.get('conversation_id')
+            conversation = None
+            new_conversation = False
 
-        # Get or create conversation
+            # Get or create conversation
         if conversation_id:
             try:
                 conversation = Conversation.objects.get(id=conversation_id, user=request.user)
@@ -77,20 +119,65 @@ class MessageViewSet(viewsets.ModelViewSet):
             conversation.title = title or "Untitled Conversation"
             conversation.save()
 
-        relevant_text = search_related_chunks(message.content, top_k=5)
-        if relevant_text.startswith('[Reference index is being built.'):
-            return Response({'detail': relevant_text}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        try:
+            # Initialize QueryHandler with RAG service
+            rag_service = get_rag_service()
+            query_handler = QueryHandler(rag_service)
 
-        user_message = f"Reference Documents:\n{relevant_text}\n\nUser Question: {message.content}"
+            # Process the query
+            query_response = query_handler.process_query(message.content)
 
-        bot_reply, token_usage = self.query_openai(user_message)
+            # Get the response message or error message if present
+            bot_reply = query_response.get("message")
+            
+            # If there's no message but there's an error, use that instead
+            if not bot_reply and query_response.get("error"):
+                bot_reply = f"Error: {query_response.get('error')}"
+                if query_response.get("fallback_response"):
+                    bot_reply += f"\n\n{query_response.get('fallback_response')}"
 
-        bot_message = Message.objects.create(
-            conversation=conversation,
-            sender='bot',
-            content=bot_reply,
-            token_usage=token_usage
-        )
+            # If it's an analytical query, include the data and sources
+            if query_response.get("type") == "analytical" and query_response.get("data"):
+                bot_reply = (
+                    f"{bot_reply}\n\n"
+                    f"Data Analysis:\n{json.dumps(query_response.get('data'), indent=2)}"
+                )
+                
+            # Add sources if available
+            if query_response.get("sources"):
+                bot_reply += f"\n\nSources: {', '.join(query_response.get('sources'))}"
+                
+            # Ensure we have a valid reply
+            if not bot_reply:
+                bot_reply = "I apologize, but I encountered an issue processing your query. Could you please try rephrasing your question?"
+
+            # Create bot message
+            error_response = None
+            try:
+                if not bot_reply:
+                    raise ValueError("Empty response from query handler")
+                bot_message = Message.objects.create(
+                    conversation=conversation,
+                    sender='bot',
+                    content=bot_reply,
+                    token_usage=None  # We'll need to add a field for analytics_data if we want to store the full response
+                )
+            except Exception as e:
+                error_msg = f"An error occurred while processing your query: {str(e)}"
+                # Create error message instead of failing
+                bot_message = Message.objects.create(
+                    conversation=conversation,
+                    sender='bot',
+                    content=error_msg
+                )
+                error_response = error_msg
+        except Exception as e:
+            # If we get here, something went very wrong (like DB issues)
+            transaction.set_rollback(True)
+            return Response(
+                {"error": f"A critical error occurred: {str(e)}"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
         bot_serializer = self.get_serializer(bot_message)
 
@@ -101,6 +188,7 @@ class MessageViewSet(viewsets.ModelViewSet):
             'conversation_id': conversation.id,
             'message': bot_serializer.data
         }, status=status.HTTP_201_CREATED)
+    
 class UserConversationsAPIView(generics.ListAPIView):
     serializer_class = ConversationSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -108,148 +196,3 @@ class UserConversationsAPIView(generics.ListAPIView):
     def get_queryset(self):
         return Conversation.objects.filter(user=self.request.user).order_by('-updated_at')
 
-
-class ChatAPIView(APIView):
-   # permission_classes = [AllowAny]
-   pass
-
-    #def post(self, request):
-     #   """Stream chat message with RAG"""
-
-      #  user_message = request.data.get("message", "").strip()
-       # if not user_message:
-        #    return StreamingHttpResponse("Error: Message required", status=400)
-
-        #rag_service = get_rag_service()
-
-        #def token_stream():
-         #   try:
-                # reset tokens for this request
-          #      rag_service.streaming_handler.reset()
-
-                # invoke LLM (tokens stream into handler)
-           #     rag_service.llm.invoke(user_message)
-
-                # yield tokens one by one
-            #    for token in rag_service.streaming_handler.tokens:
-             #       yield token
-            #except Exception as e:
-             #   yield f"Error: {str(e)}"
-
-        #return StreamingHttpResponse(token_stream(), content_type="text/plain")
-
-
-
-class MessageViewSet(viewsets.ModelViewSet):
-    queryset = Message.objects.all()
-    serializer_class = MessageSerializer
-    permission_classes = [IsAuthenticated]
-    pagination_class = PageNumberPagination
-
-    def get_queryset(self):
-        queryset = Message.objects.filter(conversation__user=self.request.user)
-        conversation_id = self.request.query_params.get('conversation_id')
-        if conversation_id:
-            queryset = queryset.filter(conversation_id=conversation_id)
-        return queryset
-
-    def query_rag_llm(self, prompt):
-        """
-        Use RAG LLM service instead of OpenAI API.
-        This collects all tokens into a single response (not streamed to client).
-        """
-        rag_service = get_rag_service()
-        rag_service.streaming_handler.reset()
-
-        try:
-            # Invoke the LLM (tokens stream into handler)
-            rag_service.llm.invoke(prompt)
-            # Collect all tokens into one string
-            reply = "".join(rag_service.streaming_handler.tokens).strip()
-            return reply
-        except Exception as e:
-            return f"[RAG LLM Error]: {str(e)}"
-    def query_rag_with_fallback(self, user_query):
-        """
-        Query RAG. If relevant docs found, use RAG.
-        If not, fall back to LLM directly.
-        """
-        rag_service = get_rag_service()
-    
-        try:
-        # Step 1: Retrieve from RAG
-            result = rag_service.query(user_query)
-            matches = result.get("matches", [])
-
-            if matches and len(matches) > 0:
-            # 🔹 Use RAG-generated answer if available
-                answer = result.get("answer")
-                if answer:
-                    return answer.strip()
-        
-        # Step 2: If no matches or no useful answer → fallback to base LLM
-            print("⚠️ No RAG context found. Falling back to direct LLM response...")
-            rag_service.streaming_handler.reset()
-            rag_service.llm.invoke(user_query)
-            llm_reply = "".join(rag_service.streaming_handler.tokens).strip()
-            return llm_reply or "I'm sorry, I couldn’t generate a response."
-
-        except Exception as e:
-            print(f"[RAG Pipeline Error]: {str(e)}")
-            return "I'm sorry, I ran into an issue while processing your query."
-	
-    def create(self, request, *args, **kwargs):
-        t0 = time.time()
-        data = request.data.copy()
-        data['sender'] = 'user'
-
-        conversation_id = data.get('conversation') or data.get('conversation_id')
-        new_conversation = False
-
-        # Get or create conversation
-        if conversation_id:
-            try:
-                conversation = Conversation.objects.get(id=conversation_id, user=request.user)
-            except Conversation.DoesNotExist:
-                return Response(
-                    {'detail': 'Conversation not found or does not belong to user.'},
-                    status=status.HTTP_404_NOT_FOUND
-                )
-        else:
-            conversation = Conversation.objects.create(user=request.user)
-            new_conversation = True
-
-        data['conversation'] = conversation.id
-
-        # Save user message
-        serializer = self.get_serializer(data=data)
-        serializer.is_valid(raise_exception=True)
-        message = serializer.save()
-
-        # Set conversation title if first message
-        if new_conversation:
-            first_line = message.content.strip().splitlines()[0]
-            title = first_line[:50].rstrip('.!?')
-            conversation.title = title or "Untitled Conversation"
-            conversation.save()
-
-        # 🔹 Use the RAG pipeline here
-        rag_service = get_rag_service()
-        result = rag_service.query(message.content)
-        bot_reply = result.get("answer", "I’m sorry, I couldn’t generate a response.")
-       # bot_reply = self.query_rag_with_fallback(message.content)
-
-        # Save bot message in DB
-        bot_message = Message.objects.create(
-            conversation=conversation,
-            sender='bot',
-            content=bot_reply,
-        )
-
-        bot_serializer = self.get_serializer(bot_message)
-        print(f"Timing: total={time.time() - t0:.2f}s")
-
-        return Response({
-            'conversation_id': conversation.id,
-            'message': bot_serializer.data
-        }, status=status.HTTP_201_CREATED)
