@@ -43,7 +43,12 @@ class OptimizedQueryProcessor:
             'theater_chain': r'\b(AMC|Regal|Cinemark|Cineplex|Marcus|Alamo Drafthouse|Harkins)\b',
             'state': r'\b(California|New York|Texas|Florida|Illinois|CA|NY|TX|FL|IL|PA|OH|GA|NC|MI)\b',
             'price': r'\$(\d+(?:\.\d{2})?)',
-            'movie_title': r'["\']([^"\']+)["\']',
+            # Enhanced movie title extraction - catches quoted titles or "movie X" or "for X"
+            'movie_title': [
+                r'["\']([^"\']+)["\']',  # Quoted titles
+                r'(?:movie|film)\s+(?:title)?\s*["\']?([A-Z][A-Za-z0-9\s:\'&-]+?)["\']?(?:\s+(?:movie|film|at|in|for|and|total|reserved|occupancy)|\?|$)',  # "movie Title" or "movie title Title"
+                r'(?:for|of)\s+(?:the\s+)?(?:movie|film)?\s*(?:title)?\s*["\']?([A-Z][A-Za-z0-9\s:\'&-]+?)["\']?(?:\s+(?:at|in|and|total|reserved|occupancy)|\?|$)',  # "for Title" or "of movie title Title"
+            ],
         }
     
     def classify_query(self, query: str) -> str:
@@ -82,9 +87,26 @@ class OptimizedQueryProcessor:
         entities = {}
         
         for entity_type, pattern in self.entity_patterns.items():
-            match = re.search(pattern, query, re.IGNORECASE)
-            if match:
-                entities[entity_type] = match.group(1)
+            # Handle movie_title which has multiple patterns
+            if entity_type == 'movie_title':
+                if isinstance(pattern, list):
+                    for p in pattern:
+                        match = re.search(p, query, re.IGNORECASE)
+                        if match:
+                            # Clean up the extracted title
+                            title = match.group(1).strip()
+                            # Remove trailing words like "movie", "film"
+                            title = re.sub(r'\s+(movie|film)$', '', title, flags=re.IGNORECASE)
+                            entities[entity_type] = title
+                            break
+                else:
+                    match = re.search(pattern, query, re.IGNORECASE)
+                    if match:
+                        entities[entity_type] = match.group(1).strip()
+            else:
+                match = re.search(pattern, query, re.IGNORECASE)
+                if match:
+                    entities[entity_type] = match.group(1)
         
         return entities
     
@@ -219,6 +241,38 @@ class OptimizedQueryProcessor:
     def _handle_sum(self, query: str, queryset, entities: Dict[str, Any]) -> Dict[str, Any]:
         """Handle sum/aggregation queries"""
         try:
+            # Check if no results after filtering
+            if not queryset.exists():
+                movie_name = entities.get('movie_title', 'specified criteria')
+                
+                # Try fuzzy matching for similar movie titles
+                similar_movies = []
+                if movie_name and isinstance(movie_name, str):
+                    # Search for similar titles (case-insensitive partial match)
+                    similar_movies = Movie.objects.filter(
+                        title__icontains=movie_name[:len(movie_name)//2]  # Match first half
+                    ).values('title').distinct()[:5]
+                
+                response_msg = f"I couldn't find any showtimes for **\"{movie_name}\"** in our database.\n\n"
+                
+                if similar_movies:
+                    response_msg += "**Did you mean one of these?**\n"
+                    for movie in similar_movies:
+                        response_msg += f"• {movie['title']}\n"
+                    response_msg += "\nPlease try searching with the exact title from above!"
+                else:
+                    response_msg += "**Suggestions:**\n"
+                    response_msg += "• Check the spelling of the movie title\n"
+                    response_msg += "• Try searching with just part of the title\n"
+                    response_msg += "• The movie might not be currently showing\n"
+                    response_msg += "\nWould you like me to show you what movies are currently popular?"
+                
+                return {
+                    'type': 'analytical',
+                    'message': response_msg,
+                    'data': {'count': 0, 'filters': entities, 'suggestions': list(similar_movies)}
+                }
+            
             # Determine what to sum
             field_map = {
                 'reserved': ('reserved', 'reserved seats'),
@@ -246,7 +300,9 @@ class OptimizedQueryProcessor:
                 average=Avg(field_to_sum),
                 maximum=Max(field_to_sum),
                 minimum=Min(field_to_sum),
-                count=Count('id')
+                count=Count('id'),
+                total_capacity=Sum('total_seats'),
+                total_reserved=Sum('reserved')
             )
             
             total = stats['total'] or 0
@@ -256,41 +312,51 @@ class OptimizedQueryProcessor:
             count = stats['count']
             
             filter_desc = self._describe_filters(entities)
+            movie_title = entities.get('movie_title', '')
             
-            # Build detailed response
-            response = f"## Summary of {field_label.title()}{filter_desc}\n\n"
-            
-            response += f"Based on **{count:,} showtimes**, here's the breakdown:\n\n"
+            # Build detailed response with movie-specific info
+            if movie_title:
+                response = f"## Total Reserved Seats for '{movie_title}'\n\n"
+                response += f"Based on **{count:,} showtimes**, here's the breakdown:\n\n"
+            else:
+                response = f"## Summary of {field_label.title()}{filter_desc}\n\n"
+                response += f"Based on **{count:,} showtimes**{filter_desc}, here's the breakdown:\n\n"
             response += f"📊 **Aggregate Statistics:**\n"
             response += f"• **Total {field_label}:** {total:,}\n"
             response += f"• **Average per showtime:** {avg:.1f}\n"
             response += f"• **Highest:** {max_val:,}\n"
             response += f"• **Lowest:** {min_val:,}\n\n"
             
-            # Add context about capacity utilization if relevant
-            if field_to_sum == 'reserved':
-                total_capacity_stats = queryset.aggregate(
-                    total_capacity=Sum('total_seats')
-                )
-                total_capacity = total_capacity_stats['total_capacity'] or 1
-                occupancy_rate = (total / total_capacity) * 100 if total_capacity > 0 else 0
+            # ALWAYS add occupancy analysis when dealing with reserved seats or when asked
+            if field_to_sum == 'reserved' or 'occupancy' in query.lower():
+                total_capacity = stats['total_capacity'] or 1
+                total_reserved = stats['total_reserved'] or 0
+                occupancy_rate = (total_reserved / total_capacity) * 100 if total_capacity > 0 else 0
                 
                 response += f"📈 **Occupancy Analysis:**\n"
                 response += f"• Total capacity: {total_capacity:,} seats\n"
+                response += f"• Total reserved: {total_reserved:,} seats\n"
                 response += f"• Overall occupancy rate: **{occupancy_rate:.1f}%**\n"
-                response += f"• Available seats: {total_capacity - total:,}\n\n"
+                response += f"• Available seats: {total_capacity - total_reserved:,}\n\n"
             
-            # Add top performers
+            # Add top theaters/showtimes for the movie
             top_items = queryset.order_by(f'-{field_to_sum}')[:5]
             if top_items.exists():
-                response += f"🎬 **Top 5 by {field_label}:**\n"
+                if movie_title:
+                    response += f"🏛️ **Top 5 Theaters Showing '{movie_title}':**\n"
+                else:
+                    response += f"🎬 **Top 5 by {field_label}:**\n"
+                
                 for i, item in enumerate(top_items, 1):
                     value = getattr(item, field_to_sum)
-                    response += f"{i}. **{item.title}** at {item.theater_name}\n"
+                    response += f"{i}. **{item.theater_name}** ({item.theater_city}, {item.theater_state})\n"
+                    if movie_title:
+                        response += f"   • Movie: {item.title}\n"
                     response += f"   • {field_label.title()}: {value:,}\n"
-                    if field_to_sum == 'reserved':
-                        occupancy = (value / item.total_seats * 100) if item.total_seats > 0 else 0
-                        response += f"   • Occupancy: {occupancy:.1f}%\n"
+                    if item.total_seats > 0:
+                        occupancy = (item.reserved / item.total_seats * 100) if item.total_seats > 0 else 0
+                        response += f"   • Occupancy rate: {occupancy:.1f}%\n"
+                    response += f"   • Format: {item.screen_format}\n"
             
             return {
                 'type': 'analytical',
@@ -301,6 +367,7 @@ class OptimizedQueryProcessor:
                     'maximum': float(max_val),
                     'minimum': float(min_val),
                     'count': count,
+                    'occupancy_rate': (stats['total_reserved'] / stats['total_capacity'] * 100) if stats['total_capacity'] and stats['total_capacity'] > 0 else 0,
                     'field': field_label,
                     'filters': entities
                 }
