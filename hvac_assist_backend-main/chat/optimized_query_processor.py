@@ -45,9 +45,9 @@ class OptimizedQueryProcessor:
             'price': r'\$(\d+(?:\.\d{2})?)',
             # Enhanced movie title extraction - catches quoted titles or "movie X" or "for X"
             'movie_title': [
-                r'["\']([^"\']+)["\']',  # Quoted titles
-                r'(?:movie|film)\s+(?:title)?\s*["\']?([A-Z][A-Za-z0-9\s:\'&-]+?)["\']?(?:\s+(?:movie|film|at|in|for|and|total|reserved|occupancy)|\?|$)',  # "movie Title" or "movie title Title"
-                r'(?:for|of)\s+(?:the\s+)?(?:movie|film)?\s*(?:title)?\s*["\']?([A-Z][A-Za-z0-9\s:\'&-]+?)["\']?(?:\s+(?:at|in|and|total|reserved|occupancy)|\?|$)',  # "for Title" or "of movie title Title"
+                r'["\']([^"\']+)["\']',  # Quoted titles like "Avatar 2"
+                r'(?:movie|film)\s+["\']?([A-Z][A-Za-z0-9\s:\'&-]{2,})["\']?(?:\s+(?:at|in|and|$))',  # "movie Title"
+                r'(?:for|of)\s+(?:the\s+)?["\']?([A-Z][A-Za-z0-9\s:\'&-]{2,}?)["\']?(?:\s*(?:at|in|and|$))',  # "for Title" or "of Title"
             ],
         }
     
@@ -86,6 +86,15 @@ class OptimizedQueryProcessor:
         """Extract entities and filters from query"""
         entities = {}
         
+        # Words/phrases that should NOT be considered movie titles
+        excluded_patterns = [
+            r'^(with|the|has|have|is|are)',  # Starts with common words
+            r'(highest|lowest|most|best|worst|top)\s+(occupancy|price|rating)',  # Query metrics
+            r'^title\b',  # Just "title"
+            r'occupancy\s+rate',  # Occupancy rate
+            r'most\s+(popular|expensive|cheap)',  # Superlatives
+        ]
+        
         for entity_type, pattern in self.entity_patterns.items():
             # Handle movie_title which has multiple patterns
             if entity_type == 'movie_title':
@@ -95,14 +104,41 @@ class OptimizedQueryProcessor:
                         if match:
                             # Clean up the extracted title
                             title = match.group(1).strip()
-                            # Remove trailing words like "movie", "film"
-                            title = re.sub(r'\s+(movie|film)$', '', title, flags=re.IGNORECASE)
-                            entities[entity_type] = title
-                            break
+                            
+                            # Skip if it's too short
+                            if len(title) < 3:
+                                continue
+                            
+                            # Check if it matches any excluded pattern
+                            is_excluded = False
+                            for exc_pattern in excluded_patterns:
+                                if re.search(exc_pattern, title, re.IGNORECASE):
+                                    is_excluded = True
+                                    break
+                            
+                            if is_excluded:
+                                continue
+                            
+                            # Additional check: title shouldn't contain query keywords
+                            query_keywords = ['highest', 'lowest', 'occupancy', 'rate', 'best', 'worst', 'most popular']
+                            if any(keyword in title.lower() for keyword in query_keywords):
+                                continue
+                            
+                            # Remove trailing words like "movie", "film", "title"
+                            title = re.sub(r'\s+(movie|film|title)$', '', title, flags=re.IGNORECASE)
+                            
+                            # Final validation: should contain actual content and be a plausible movie title
+                            if re.search(r'[A-Za-z]{2,}', title) and len(title) >= 3:
+                                entities[entity_type] = title
+                                break
                 else:
                     match = re.search(pattern, query, re.IGNORECASE)
                     if match:
-                        entities[entity_type] = match.group(1).strip()
+                        title = match.group(1).strip()
+                        # Check exclusions
+                        is_excluded = any(re.search(exc, title, re.IGNORECASE) for exc in excluded_patterns)
+                        if not is_excluded:
+                            entities[entity_type] = title
             else:
                 match = re.search(pattern, query, re.IGNORECASE)
                 if match:
@@ -446,6 +482,10 @@ class OptimizedQueryProcessor:
             limit = int(limit_match.group(1)) if limit_match else 10
             limit = min(limit, 50)  # Cap at 50
             
+            # Check for occupancy rate queries
+            if 'occupancy' in query.lower() or 'occupied' in query.lower():
+                return self._handle_occupancy_ranking(query, queryset, entities, limit)
+            
             # Determine sorting
             if 'expensive' in query.lower() or 'highest price' in query.lower():
                 order_field = '-price'
@@ -453,7 +493,7 @@ class OptimizedQueryProcessor:
             elif 'cheap' in query.lower() or 'lowest price' in query.lower():
                 order_field = 'price'
                 metric = 'cheapest'
-            elif 'popular' in query.lower() or 'occupied' in query.lower():
+            elif 'popular' in query.lower():
                 order_field = '-reserved'
                 metric = 'most popular'
             elif 'available' in query.lower():
@@ -502,6 +542,64 @@ class OptimizedQueryProcessor:
         except Exception as e:
             logger.error(f"Error in top query: {e}")
             return self._error_response(f"Unable to get top results: {str(e)}")
+    
+    def _handle_occupancy_ranking(self, query: str, queryset, entities: Dict[str, Any], limit: int) -> Dict[str, Any]:
+        """Handle queries asking for movies ranked by occupancy rate"""
+        try:
+            # Calculate occupancy rate for each movie (aggregated by title)
+            # Filter for realistic data: reserved <= total_capacity (with small buffer for overbooking)
+            movies = queryset.values('title', 'genre', 'rating').annotate(
+                showtime_count=Count('id'),
+                total_capacity=Sum('total_seats'),
+                total_reserved=Sum('reserved'),
+                avg_price=Avg('price')
+            ).annotate(
+                occupancy_rate=ExpressionWrapper(
+                    F('total_reserved') * 100.0 / F('total_capacity'),
+                    output_field=FloatField()
+                )
+            ).filter(
+                total_capacity__gt=0,  # Ensure valid data
+                total_reserved__gte=0,  # No negative reservations
+            ).exclude(
+                # Exclude unrealistic data where reserved > capacity * 1.2 (allow 20% overbooking max)
+                total_reserved__gt=F('total_capacity') * 1.2
+            ).order_by('-occupancy_rate')[:limit]
+            
+            if not movies:
+                return self._error_response("No movies found with valid occupancy data.")
+            
+            filter_desc = self._describe_filters(entities)
+            response = f"## Top {len(movies)} Movies by Occupancy Rate{filter_desc}\n\n"
+            response += "_Ranked by highest to lowest occupancy (showing only realistic data: 0-120%)_\n\n"
+            
+            for i, movie in enumerate(movies, 1):
+                response += f"### {i}. {movie['title']}\n"
+                response += f"**Genre:** {movie['genre'] or 'N/A'} | **Rating:** {movie['rating'] or 'N/A'}\n"
+                response += f"**Occupancy Rate:** {movie['occupancy_rate']:.1f}%\n"
+                response += f"**Showtimes:** {movie['showtime_count']:,} screenings\n"
+                response += f"**Seats Reserved:** {movie['total_reserved']:,} out of {movie['total_capacity']:,}\n"
+                if movie['avg_price'] and movie['avg_price'] > 0:
+                    response += f"**Average Price:** ${movie['avg_price']:.2f}\n"
+                response += "\n"
+            
+            # Add data quality note
+            response += "\n_Note: Results filtered to show only valid occupancy data (excludes data inconsistencies)._"
+            
+            return {
+                'type': 'analytical',
+                'message': response,
+                'data': {
+                    'movies': list(movies),
+                    'count': len(movies),
+                    'metric': 'occupancy_rate',
+                    'filters': entities
+                }
+            }
+        
+        except Exception as e:
+            logger.error(f"Error in occupancy ranking: {e}")
+            return self._error_response(f"Unable to rank by occupancy: {str(e)}")
     
     def _format_top_movies_response(self, movies, entities, limit):
         """Format top movies by showtime count"""
