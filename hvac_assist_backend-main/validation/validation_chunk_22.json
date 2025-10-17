@@ -1,0 +1,19 @@
+{
+  "chunk_number": 22,
+  "timestamp": "2025-10-17T09:01:08.801906",
+  "total_chunks": 26593,
+  "chunk_types": {
+    "film_performance": 25000,
+    "movie_summary": 1,
+    "theater_performance": 1592
+  },
+  "precision_metrics": {
+    "precision_decimals": 2,
+    "validation_threshold": 0.001,
+    "sample_calculations": {
+      "price": 14.92,
+      "occupancy_rate": 0.0,
+      "sales_estimate": 179.04
+    }
+  }
+}

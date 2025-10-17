@@ -5,7 +5,7 @@ from langchain.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.prompts import PromptTemplate
 from langchain.chains import RetrievalQA
-from langchain_community.llms import Ollama
+from langchain_ollama import OllamaLLM
 
 def chunk_movie_dataset(csv_path, chunksize=5000, max_rows=100000):
     """
@@ -105,7 +105,7 @@ def setup_rag_chain(faiss_index_path='faiss_index_test'):
         print("Setting up RAG chain...")
         embeddings_model = HuggingFaceEmbeddings(model_name='paraphrase-multilingual-MiniLM-L12-v2')
         vectorstore = FAISS.load_local(faiss_index_path, embeddings_model, allow_dangerous_deserialization=True)
-        llm = Ollama(model="llama3:8b", temperature=0.2, num_predict=256)
+        llm = OllamaLLM(model="llama3:8b", temperature=0.2, num_predict=256)
         print("Testing Ollama connection...")
         llm.invoke("Test")
         print("Ollama connection successful")

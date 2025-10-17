@@ -1,8 +1,0 @@
-{
-  "timestamp": "2025-10-04T09:50:33.898940",
-  "step": "preprocessing",
-  "data": {
-    "rows_processed": 1000000,
-    "texts_created": 1000000
-  }
-}

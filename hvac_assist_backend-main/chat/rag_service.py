@@ -68,7 +68,7 @@ You are an expert cinema and movie assistant for a theater ticketing system. You
 
 from sentence_transformers import SentenceTransformer
 from pinecone import Pinecone
-from langchain_community.llms import Ollama
+from langchain_ollama import OllamaLLM
 from langchain.prompts import PromptTemplate
 from langchain.callbacks.base import BaseCallbackHandler
 import logging
@@ -254,7 +254,7 @@ class MovieRAGService:
 
         try:
             # Create LLM instance (no connection test)
-            self.llm = Ollama(
+            self.llm = OllamaLLM(
                 model=self.config.OLLAMA_MODEL,
                 base_url=self.config.OLLAMA_BASE_URL,
                 temperature=self.config.TEMPERATURE,
