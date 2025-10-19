@@ -80,8 +80,22 @@ class ComprehensiveEntelligenceHandler:
         """Detect query type for optimal routing"""
         query_lower = query.lower()
         
-        # Database-specific queries
+        # Complex analytical queries (NEW)
         if any(phrase in query_lower for phrase in [
+            'best comp titles', 'comparable titles', 'comp titles',
+            'estimated sales', 'projected sales', 'box office prediction',
+            'over performing', 'underperforming', 'performance analysis',
+            'where are my opportunities', 'market opportunities',
+            'what showtimes', 'best showtimes', 'optimal showtimes',
+            'weekend drop', 'second weekend', 'how much will drop',
+            'imax performance', 'imax screens', 'imax overperforming',
+            'performing in', 'less populated areas', 'geographic performance',
+            'programmed for this weekend', 'capacity comparison'
+        ]):
+            return 'complex_analytics'
+        
+        # Database-specific queries
+        elif any(phrase in query_lower for phrase in [
             'total reserved', 'total seats', 'sum of', 'count of', 'how many',
             'top 5', 'top 10', 'best', 'highest', 'most popular',
             'average price', 'avg price', 'occupancy rate',

@@ -22,7 +22,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--chunk-size',
             type=int,
-            default=100000,
+            default=50000,
             help='Chunk size for processing (default: 25000)',
         )
         parser.add_argument(
@@ -53,7 +53,10 @@ class Command(BaseCommand):
             )
         else:
             self.stdout.write(
-                self.style.SUCCESS('🚀 Starting Entelligence Film Analytics Pipeline')
+                self.style.SUCCESS('🚀 Starting Precision Entelligence Pipeline')
+            )
+            self.stdout.write(
+                self.style.SUCCESS('💾 Periodic Checkpoints Every 2 Chunks')
             )
         
         try:

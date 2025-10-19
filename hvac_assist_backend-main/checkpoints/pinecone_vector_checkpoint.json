@@ -1,0 +1,14 @@
+{
+  "timestamp": "2025-10-17T18:01:01.092082",
+  "pinecone_stats": {
+    "total_vectors": 923547,
+    "dimension": 768,
+    "index_fullness": 0.0,
+    "timestamp": "2025-10-17T18:01:01.048713"
+  },
+  "total_vectors_in_pinecone": 923547,
+  "index_fullness": 0.0,
+  "dimension": 768,
+  "checkpoint_type": "pinecone_vector_count",
+  "status": "verified"
+}

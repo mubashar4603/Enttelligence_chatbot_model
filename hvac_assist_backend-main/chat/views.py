@@ -15,6 +15,7 @@ from .rag_service import get_rag_service
 from .query_handler import QueryHandler
 from .enhanced_query_handler import EnhancedQueryHandler
 from .optimized_query_processor import get_query_processor
+from .intelligent_film_analytics_agent import get_intelligent_agent
 from rest_framework.permissions import IsAuthenticated
 
 
@@ -28,11 +29,11 @@ class ChatAPIView(APIView):
             return Response({"error": "Message required"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # Initialize OptimizedQueryProcessor
-            query_processor = get_query_processor()
+            # Initialize Intelligent Film Analytics Agent
+            intelligent_agent = get_intelligent_agent()
 
-            # Process the query
-            response = query_processor.process_query(user_message)
+            # Process the query with intelligent AI reasoning
+            response = intelligent_agent.process_intelligent_query(user_message)
 
             # Return the response
             return Response({
@@ -122,11 +123,15 @@ class MessageViewSet(viewsets.ModelViewSet):
             conversation.save()
 
         try:
-            # Initialize OptimizedQueryProcessor
-            query_processor = get_query_processor()
+            # Initialize Intelligent Film Analytics Agent
+            intelligent_agent = get_intelligent_agent()
 
-            # Process the query
-            query_response = query_processor.process_query(message.content)
+            # Process the query with intelligent AI reasoning
+            query_response = intelligent_agent.process_intelligent_query(
+                message.content, 
+                user=request.user, 
+                conversation=conversation
+            )
 
             # Get the response message - ALWAYS natural language, no JSON
             bot_reply = query_response.get("message", "")

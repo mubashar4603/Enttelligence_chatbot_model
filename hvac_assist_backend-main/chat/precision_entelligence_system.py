@@ -25,8 +25,7 @@ from django.db import transaction
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'hvac_assist_backend.settings')
 django.setup()
 
-from movies.models import Movie
-from chat.analytics_models import EmbeddingChunk
+from movies.models import Movie, EmbeddingChunk
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -58,6 +57,7 @@ class PrecisionEntelligenceSystem:
             'CHUNK_SIZE': 25000,
             'CSV_PATH': "/home/ec2-user/Enttelligence_chatbot_model/Entelligence_7.4M_dataset.csv",
             'CHECKPOINT_DIR': "checkpoints",
+            'CHECKPOINT_INTERVAL': 2,  # Save checkpoint every 2 chunks
             'VALIDATION_DIR': "validation",
             
             # Accuracy settings
@@ -580,6 +580,32 @@ Price Range: ${min(prices_clean):.2f} - ${max(prices_clean):.2f}
         
         logger.info(f"💾 Precision checkpoint saved: {total_processed:,} records processed")
     
+    def save_periodic_checkpoint(self, chunk_number: int, total_processed: int, vectors_created: int):
+        """Save periodic checkpoint during processing"""
+        try:
+            checkpoint_data = {
+                'timestamp': datetime.now().isoformat(),
+                'chunk_number': chunk_number,
+                'total_processed': total_processed,
+                'total_vectors_created': vectors_created,
+                'precision_settings': {
+                    'precision_decimals': self.config['PRECISION_DECIMALS'],
+                    'validation_threshold': self.config['VALIDATION_THRESHOLD']
+                },
+                'checkpoint_type': 'periodic_progress'
+            }
+            
+            checkpoint_path = os.path.join(self.config['CHECKPOINT_DIR'], 'precision_checkpoint.json')
+            os.makedirs(self.config['CHECKPOINT_DIR'], exist_ok=True)
+            
+            with open(checkpoint_path, 'w') as f:
+                json.dump(checkpoint_data, f, indent=2)
+            
+            logger.info(f"💾 Periodic checkpoint saved: {total_processed:,} records processed")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Could not save periodic checkpoint: {e}")
+    
     def run_precision_pipeline(self):
         """Run the precision-focused pipeline"""
         logger.info("🚀 Starting Precision Entelligence Pipeline")
@@ -637,10 +663,10 @@ Price Range: ${min(prices_clean):.2f} - ${max(prices_clean):.2f}
                 del chunk
                 gc.collect()
                 
-                # Save checkpoint every 5 chunks for better resumability
-                if chunk_num % 5 == 0:
-                    self.save_checkpoint(chunk_num, total_processed)
-                    logger.info(f"💾 Checkpoint saved: Chunk {chunk_num}, {total_processed:,} records")
+                # Save periodic checkpoint every few chunks for better resumability
+                if chunk_num % self.config['CHECKPOINT_INTERVAL'] == 0:
+                    self.save_periodic_checkpoint(chunk_num, total_processed, total_processed)
+                    logger.info(f"💾 Periodic checkpoint saved: Chunk {chunk_num}, {total_processed:,} records")
                 
                 # Show progress
                 chunk_time = time.time() - chunk_start_time

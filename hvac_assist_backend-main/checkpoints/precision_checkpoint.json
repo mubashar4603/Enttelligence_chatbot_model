@@ -1,9 +1,11 @@
 {
-  "timestamp": "2025-10-17T12:38:04.133748",
-  "chunk_number": 5,
-  "total_processed": 511478,
+  "timestamp": "2025-10-19T08:30:50.236518",
+  "chunk_number": 148,
+  "total_processed": 7588567,
+  "total_vectors_created": 7588567,
   "precision_settings": {
     "precision_decimals": 2,
     "validation_threshold": 0.001
-  }
+  },
+  "checkpoint_type": "periodic_progress"
 }
