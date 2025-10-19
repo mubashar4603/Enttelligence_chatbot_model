@@ -1,0 +1,99 @@
+{
+  "summary": {
+    "total_tests": 46,
+    "passed_tests": 44,
+    "failed_tests": 2,
+    "success_rate": 0.0,
+    "timestamp": "2025-10-19T12:16:58.942179"
+  },
+  "type_stats": {
+    "comp_titles": {
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    "sales_prediction": {
+      "total": 3,
+      "passed": 3,
+      "failed": 0
+    },
+    "unclear": {
+      "total": 9,
+      "passed": 9,
+      "failed": 0
+    },
+    "performance_analysis": {
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    "general": {
+      "total": 6,
+      "passed": 5,
+      "failed": 1
+    },
+    "daily_earnings": {
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    "off_topic": {
+      "total": 5,
+      "passed": 5,
+      "failed": 0
+    },
+    "showtime_analysis": {
+      "total": 2,
+      "passed": 2,
+      "failed": 0
+    },
+    "basic_database": {
+      "total": 5,
+      "passed": 5,
+      "failed": 0
+    },
+    "movie_information": {
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    "price_analysis": {
+      "total": 5,
+      "passed": 5,
+      "failed": 0
+    },
+    "theater_comparison": {
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    "seating_analysis": {
+      "total": 5,
+      "passed": 5,
+      "failed": 0
+    },
+    "unknown": {
+      "total": 1,
+      "passed": 0,
+      "failed": 1
+    }
+  },
+  "detailed_results": [
+    {
+      "query": "What are the best comp titles for Twisters?",
+      "description": "Comp titles analysis",
+      "detected_type": "comp_titles",
+      "expected_type": "comp_titles",
+      "success": true,
+      "result": {
+        "type": "comp_titles",
+        "message": "Based on the available data, I can provide some insights on comparable titles for \"Twisters\".\n\nThe two most similar titles in terms of genre and rating are:\n\n1. Homestead - Genre: Action, Rating: PG-13, Sales: $380,478\n2. Dune: Part Two - Genre: Action, Rating: PG-13, Sales: $231,721\n\nThese two films share the same genre (Action) and rating (PG-13), which makes them suitable comps for \"Twisters\". The sales figures also provide a rough estimate of how well these films performed at the box office.\n\nHowever, it's worth noting that \"Monkey Man\" is an outlier in terms of its low sales figure (-$8,751). This film's poor performance might not be a good indicator of how well \"Twisters\" will do.\n\nTo provide a more comprehensive analysis, I would need additional data on the target audience, marketing strategies, and release dates for each film. With this information, I could better understand the market trends and make more accurate predictions about the performance of \"Twisters\".",
+        "data": {
+          "target_movie": "Twisters",
+          "comp_titles": [
+            {
+              "title": "Homestead",
+              "genre": "Action",
+              "rating": "PG-13",
+              "studio": "Angel Studios",
+              "total_sales": 
