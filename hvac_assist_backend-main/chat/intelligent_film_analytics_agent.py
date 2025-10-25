@@ -48,6 +48,136 @@ class IntelligentFilmAnalyticsAgent:
         
         # Query understanding patterns
         self.query_patterns = {
+            'date_movies': [
+                r'what movies? are showing.*(\d{4}-\d{2}-\d{2})',
+                r'movies? showing.*(\d{4}-\d{2}-\d{2})',
+                r'what.*playing.*(\d{4}-\d{2}-\d{2})',
+                r'showings?.*(\d{4}-\d{2}-\d{2})',
+                r'(\d{4}-\d{2}-\d{2}).*movies?',
+                r'(\d{4}-\d{2}-\d{2}).*showing'
+            ],
+            'theater_location': [
+                r'theaters? in (.+)',
+                r'cinemas? in (.+)',
+                r'theaters?.*(.+)',
+                r'list.*theaters?.*(.+)',
+                r'show.*theaters?.*(.+)',
+                r'(.+) theaters?'
+            ],
+            'amenities_format': [
+                r'amenities.*theater.*(\d+)',
+                r'what amenities.*theater.*(\d+)',
+                r'theater.*(\d+).*amenities',
+                r'imax.*movies?',
+                r'4dx.*movies?',
+                r'count.*imax',
+                r'count.*4dx',
+                r'(.+) format.*movies?'
+            ],
+            'pricing_seats': [
+                r'movies?.*under.*\$(\d+)',
+                r'ticket.*price.*under.*\$(\d+)',
+                r'movies?.*price.*less.*\$(\d+)',
+                r'seats?.*more.*than.*(\d+)',
+                r'available.*seats?.*(\d+)',
+                r'max.*ticket.*price',
+                r'child.*ticket.*price',
+                r'senior.*ticket.*price'
+            ],
+            'studio_genre': [
+                r'genres?.*(\d{4}-\d{2}-\d{2})',
+                r'studios?.*(\d{4}-\d{2}-\d{2})',
+                r'(.+) movies?.*(\d{4}-\d{2}-\d{2})',
+                r'movies?.*releasing.*(\d{4}-\d{2}-\d{2})',
+                r'(.+) genre.*movies?',
+                r'(.+) studio.*movies?'
+            ],
+            'circuit_comparison': [
+                r'circuit.*more.*theaters?',
+                r'compare.*circuits?',
+                r'amc.*vs.*regal',
+                r'regal.*vs.*amc',
+                r'which.*circuit.*more',
+                r'circuit.*comparison'
+            ],
+            'auditorium_analysis': [
+                r'average.*number.*auditoriums?.*per.*theater',
+                r'auditorium.*count',
+                r'auditoriums?.*per.*theater',
+                r'average.*auditoriums?'
+            ],
+            'runtime_filter': [
+                r'movies?.*runtime.*longer.*than.*(\d+)',
+                r'runtime.*longer.*than.*(\d+)',
+                r'movies?.*longer.*than.*(\d+).*minutes?',
+                r'runtime.*greater.*than.*(\d+)'
+            ],
+            'international_screenings': [
+                r'international.*movie.*screenings?',
+                r'non-us.*movie.*screenings?',
+                r'global.*screenings?',
+                r'worldwide.*movies?',
+                r'international.*non-us'
+            ],
+            'imax_theater_count': [
+                r'count.*theaters?.*offering.*imax',
+                r'imax.*theaters?',
+                r'theaters?.*offering.*imax',
+                r'imax.*theater.*count'
+            ],
+            'movie_listing': [
+                r'list.*me.*all.*movies?',
+                r'list.*all.*movies?',
+                r'all.*movie.*titles?',
+                r'show.*all.*movies?',
+                r'movies?.*title'
+            ],
+            'theater_listing': [
+                r'list.*me.*all.*unique.*theaters?',
+                r'list.*all.*unique.*theaters?',
+                r'all.*unique.*theaters?',
+                r'show.*all.*theaters?',
+                r'list.*theaters?',
+                r'unique.*theaters?',
+                r'all.*theaters?'
+            ],
+            'theater_update': [
+                r'last.*update.*theater.*(\d+)',
+                r'when.*was.*the.*last.*update.*theater.*(\d+)',
+                r'theater.*(\d+).*last.*update',
+                r'update.*theater.*(\d+)'
+            ],
+            'peak_hours_analysis': [
+                r'peak.*showtime.*hours?',
+                r'peak.*hours?',
+                r'busiest.*hours?',
+                r'showtime.*hours?',
+                r'reservations?.*by.*hour',
+                r'identify.*peak.*showtime'
+            ],
+            'occupancy_rate_analysis': [
+                r'average.*seat.*occupancy.*rate.*across.*all.*theaters?.*for.*(.+)',
+                r'occupancy.*rate.*across.*all.*theaters?.*for.*(.+)',
+                r'seat.*occupancy.*rate.*for.*(.+)',
+                r'average.*occupancy.*for.*(.+)'
+            ],
+            'movie_performance': [
+                r'performance.*of.*(.+)',
+                r'sales.*data.*for.*(.+)',
+                r'revenue.*for.*(.+)',
+                r'occupancy.*for.*(.+)',
+                r'showings.*for.*(.+)',
+                r'theaters.*for.*(.+)',
+                r'analysis.*of.*(.+)'
+            ],
+            'occupancy_analytics': [
+                r'occupancy.*rate.*(.+)',
+                r'average.*occupancy.*(.+)',
+                r'seat.*occupancy.*(.+)',
+                r'peak.*showtime',
+                r'busiest.*hours?',
+                r'peak.*hours?'
+            ],
             'comp_titles': [
                 r'best comp titles? for (.+)',
                 r'comparable titles? for (.+)',
@@ -204,6 +334,71 @@ class IntelligentFilmAnalyticsAgent:
             if any(word in query_lower for word in ['market opportunities', 'opportunities', 'where are my opportunities', 'where are opportunities', 'where are my']):
                 query_type = 'market_opportunities'
             
+            # Studio and genre queries (check BEFORE date queries to avoid conflicts)
+            elif any(word in query_lower for word in ['studios releasing', 'studios have', 'which studios', 'studio', 'studios']) and re.search(r'\d{4}-\d{2}-\d{2}', query):
+                query_type = 'studio_genre'
+            elif any(word in query_lower for word in ['genres playing', 'genres for', 'which genres', 'genre', 'genres']) and re.search(r'\d{4}-\d{2}-\d{2}', query):
+                query_type = 'studio_genre'
+            elif any(word in query_lower for word in ['action movies', 'warner bros', 'warner', 'studio']) and any(word in query_lower for word in ['released by', 'by warner', 'action']):
+                query_type = 'studio_genre'
+            
+            # Date-based movie queries (only if not studio/genre query)
+            elif re.search(r'\d{4}-\d{2}-\d{2}', query) and any(word in query_lower for word in ['movies', 'showing', 'playing', 'showings']) and not any(word in query_lower for word in ['studios', 'genres', 'studio', 'genre']):
+                query_type = 'date_movies'
+            
+            # Theater location queries
+            elif any(word in query_lower for word in ['theaters in', 'cinemas in', 'list theaters', 'show theaters']) and any(word in query_lower for word in ['st. petersburg', 'los angeles', 'new york', 'chicago', 'miami', 'atlanta', 'dallas', 'houston', 'phoenix', 'philadelphia', 'san antonio', 'san diego', 'san jose', 'austin', 'jacksonville', 'fort worth', 'columbus', 'charlotte', 'san francisco', 'indianapolis', 'seattle', 'denver', 'washington', 'boston', 'el paso', 'nashville', 'detroit', 'oklahoma city', 'portland', 'las vegas', 'memphis', 'louisville', 'baltimore', 'milwaukee', 'albuquerque', 'tucson', 'fresno', 'mesa', 'sacramento', 'kansas city', 'atlanta', 'omaha', 'raleigh', 'miami', 'cleveland', 'tulsa', 'oakland', 'minneapolis', 'wichita', 'arlington']):
+                query_type = 'theater_location'
+            
+            # Amenities and format queries
+            elif any(word in query_lower for word in ['amenities', 'theater id', 'imax count', '4dx count', 'format movies']):
+                query_type = 'amenities_format'
+            
+            # Pricing and seat queries
+            elif any(word in query_lower for word in ['under $', 'ticket price', 'available seats', 'more than', 'max ticket', 'senior ticket', 'child ticket']):
+                query_type = 'pricing_seats'
+            
+            
+            # Circuit comparison queries
+            elif any(word in query_lower for word in ['circuit', 'amc', 'regal']) and any(word in query_lower for word in ['more theaters', 'vs', 'comparison']):
+                query_type = 'circuit_comparison'
+            
+            # Auditorium queries
+            elif any(word in query_lower for word in ['average number of auditoriums', 'auditorium count', 'auditoriums per theater']):
+                query_type = 'auditorium_analysis'
+            
+            # Runtime filter queries
+            elif any(word in query_lower for word in ['runtime longer than', 'movies longer than', 'runtime greater than']) and any(word in query_lower for word in ['minutes', '150', '120', '180']):
+                query_type = 'runtime_filter'
+            
+            # International screenings queries
+            elif any(word in query_lower for word in ['international', 'non-us', 'non us', 'global screenings', 'worldwide movies']):
+                query_type = 'international_screenings'
+            
+            # IMAX theater count queries
+            elif any(word in query_lower for word in ['count theaters offering imax', 'imax theaters', 'theaters offering imax', 'imax theater count']):
+                query_type = 'imax_theater_count'
+            
+            # Movie listing queries
+            elif any(word in query_lower for word in ['list me all movies', 'list all movies', 'all movie titles', 'show all movies', 'movies title']):
+                query_type = 'movie_listing'
+            
+            # Theater update queries
+            elif any(word in query_lower for word in ['last update', 'when was the last update', 'theater update']) and re.search(r'\d+', query):
+                query_type = 'theater_update'
+            
+            # Peak hours analysis queries
+            elif any(word in query_lower for word in ['peak showtime', 'peak hours', 'busiest hours', 'showtime hours', 'reservations by hour']):
+                query_type = 'peak_hours_analysis'
+            
+            # Occupancy rate queries
+            elif any(word in query_lower for word in ['average seat occupancy', 'occupancy rate', 'seat occupancy', 'occupancy across']) and any(word in query_lower for word in ['theaters', 'all theaters', 'across']):
+                query_type = 'occupancy_rate_analysis'
+            
+            # Generic movie performance queries (catch-all for movie-specific analytics)
+            elif any(word in query_lower for word in ['performance', 'sales', 'revenue', 'occupancy', 'showings', 'theaters']) and self._extract_movie_titles_from_query(query):
+                query_type = 'movie_performance'
+            
             # Check if query is related to film/theater business
             film_theater_keywords = [
                 'movie', 'film', 'cinema', 'theater', 'theatre', 'showtime', 'show', 'screen',
@@ -284,6 +479,8 @@ class IntelligentFilmAnalyticsAgent:
             # Comparative analysis
             elif any(word in query_lower for word in ['comp titles', 'comparable', 'similar movies', 'best comp']):
                 query_type = 'comp_titles'
+                # Extract movie titles for comp titles queries
+                movie_titles = self._extract_movie_titles_from_query(query)
             elif any(word in query_lower for word in ['compare', 'comparison']) and not ('theater' in query_lower or 'amc' in query_lower or 'regal' in query_lower):
                 query_type = 'performance_analysis'
             
@@ -500,8 +697,8 @@ IMPORTANT: Base your response ONLY on the data above. Do not use any external kn
         
         if 'comp_titles' in data:
             formatted_data.append("Comparable Titles:")
-            for i, comp in enumerate(data['comp_titles'][:3], 1):
-                formatted_data.append(f"{i}. {comp['title']} - Genre: {comp['genre']}, Rating: {comp['rating']}, Sales: ${comp['total_sales']:,.0f}")
+            for i, comp in enumerate(data['comp_titles'][:6], 1):  # Show up to 6 titles
+                formatted_data.append(f"{i}. {comp['title']} - Genre: {comp['genre']}, Rating: {comp['rating']}, Sales: ${comp['total_sales']:,.2f}, Occupancy: {comp['occupancy']:.1f}%")
         
         if 'predicted_sales' in data:
             formatted_data.append(f"Predicted Sales: {data['predicted_sales']}")
@@ -520,8 +717,18 @@ IMPORTANT: Base your response ONLY on the data above. Do not use any external kn
     def _format_comp_titles_response(self, data: Dict[str, Any]) -> str:
         """Format comp titles response - ONLY based on provided data"""
         if 'comp_titles' in data and data['comp_titles']:
-            titles = [comp['title'] for comp in data['comp_titles'][:3]]
-            return f"Based on the data in my database, the best comparable titles for {data.get('target_movie', 'this movie')} are: {', '.join(titles)}. These were determined by finding movies with similar genre and rating that have comparable performance patterns in my database."
+            response = f"**Best Comparable Titles for {data.get('target_movie', 'this movie')}:**\n\n"
+            
+            for i, comp in enumerate(data['comp_titles'][:6], 1):  # Show up to 6 titles
+                response += f"{i}. **{comp['title']}**\n"
+                response += f"   • Genre: {comp['genre']} | Rating: {comp['rating']}\n"
+                response += f"   • Studio: {comp['studio']}\n"
+                response += f"   • Total Sales: ${comp['total_sales']:,.2f}\n"
+                response += f"   • Occupancy Rate: {comp['occupancy']:.1f}%\n"
+                response += f"   • Reserved Seats: {comp['total_reserved']:,}\n\n"
+            
+            response += f"**Analysis**: Found {len(data['comp_titles'])} comparable titles based on genre and rating with accurate sales calculations using Price × Reserved formula."
+            return response
         return "I couldn't find comparable titles for this movie in my database. The data may be insufficient for this analysis."
     
     def _format_sales_prediction_response(self, data: Dict[str, Any]) -> str:
@@ -556,29 +763,39 @@ IMPORTANT: Base your response ONLY on the data above. Do not use any external kn
         movie_titles = []
         query_lower = query.lower()
         
-        # Known movies in database
-        movies_in_db = ['twisters', 'dune: part two', 'joker: folie a deux', 'monkey man', 'homestead', 'weapons', 'superman', 'fantastic four', 'jurassic world rebirth', 'the matrix', 'inception', 'the dark knight', 'oppenheimer', 'interstellar', 'barbie', 'the lion king', 'dune', 'avatar', 'demon slayer', 'drive-away dolls']
+        # Get all movies from database dynamically
+        try:
+            movies_in_db = list(Movie.objects.values_list('title', flat=True).distinct())
+            movies_in_db_lower = [movie.lower() for movie in movies_in_db if movie]
+        except Exception as e:
+            logger.error(f"Error fetching movies from database: {e}")
+            # Fallback to known movies if database query fails
+            movies_in_db_lower = ['twisters', 'dune: part two', 'joker: folie a deux', 'monkey man', 'homestead', 'weapons', 'superman', 'fantastic four', 'jurassic world rebirth', 'the matrix', 'inception', 'the dark knight', 'oppenheimer', 'interstellar', 'barbie', 'the lion king', 'dune', 'avatar', 'demon slayer', 'drive-away dolls']
         
         # First pass: exact match
-        for movie in movies_in_db:
+        for movie in movies_in_db_lower:
             if movie in query_lower:
-                movie_titles.append(movie.title())
+                # Find the original case version
+                original_movie = next((m for m in movies_in_db if m.lower() == movie), movie.title())
+                movie_titles.append(original_movie)
         
         # Second pass: partial match (remove spaces, colons, etc.)
         if not movie_titles:
-            for movie in movies_in_db:
+            for movie in movies_in_db_lower:
                 movie_clean = movie.replace(':', '').replace(' ', '').replace('-', '').replace("'", '').lower()
                 query_clean = query_lower.replace(':', '').replace(' ', '').replace('-', '').replace("'", '')
                 if movie_clean in query_clean:
-                    movie_titles.append(movie.title())
+                    original_movie = next((m for m in movies_in_db if m.lower() == movie), movie.title())
+                    movie_titles.append(original_movie)
         
         # Third pass: word-by-word matching
         if not movie_titles:
             query_words = query_lower.split()
-            for movie in movies_in_db:
+            for movie in movies_in_db_lower:
                 movie_words = movie.split()
                 if any(word in movie_words for word in query_words if len(word) > 3):
-                    movie_titles.append(movie.title())
+                    original_movie = next((m for m in movies_in_db if m.lower() == movie), movie.title())
+                    movie_titles.append(original_movie)
                     break
         
         # Fourth pass: regex patterns for quoted titles
@@ -587,6 +804,41 @@ IMPORTANT: Base your response ONLY on the data above. Do not use any external kn
             quoted_match = re.search(r"['\"]([^'\"]+)['\"]", query)
             if quoted_match:
                 movie_titles.append(quoted_match.group(1))
+        
+        # Fifth pass: extract from "for X" patterns (common in comp titles queries)
+        if not movie_titles:
+            import re
+            for_pattern = re.search(r'for (.+?)(?:\?|$)', query_lower)
+            if for_pattern:
+                potential_title = for_pattern.group(1).strip()
+                # Check if it matches any known movie
+                for movie in movies_in_db_lower:
+                    if movie in potential_title or potential_title in movie:
+                        original_movie = next((m for m in movies_in_db if m.lower() == movie), movie.title())
+                        movie_titles.append(original_movie)
+                        break
+        
+        # Sixth pass: extract from "comp titles for X" patterns
+        if not movie_titles:
+            import re
+            comp_pattern = re.search(r'comp titles? for (.+?)(?:\?|$)', query_lower)
+            if comp_pattern:
+                potential_title = comp_pattern.group(1).strip()
+                for movie in movies_in_db_lower:
+                    if movie in potential_title or potential_title in movie:
+                        original_movie = next((m for m in movies_in_db if m.lower() == movie), movie.title())
+                        movie_titles.append(original_movie)
+                        break
+        
+        # Seventh pass: if asking for comp titles without specifying a movie, suggest popular movies
+        if not movie_titles and any(word in query_lower for word in ['comp titles', 'comparable', 'similar movies', 'best comp']):
+            # Return popular movies from database as suggestions
+            try:
+                popular_movies = list(Movie.objects.values_list('title', flat=True).distinct()[:5])
+                movie_titles = popular_movies[:3]  # Return top 3 as suggestions
+            except:
+                popular_movies = ['Twisters', 'Dune: Part Two', 'Joker: Folie a Deux', 'Monkey Man', 'Homestead']
+                movie_titles = popular_movies[:3]  # Return top 3 as suggestions
         
         return movie_titles
     
@@ -987,47 +1239,120 @@ IMPORTANT: Base your response ONLY on the data above. Do not use any external kn
         """Handle comparable titles queries with AI enhancement"""
         movie_titles = query_intent.get('movie_titles', [])
         
+        # If no specific movie mentioned, extract from query or provide general guidance
         if not movie_titles:
-            return {'error': 'No movie title found in query'}
+            # Try to extract movie title from query using improved patterns
+            extracted_titles = self._extract_movie_titles_from_query(query)
+            if extracted_titles:
+                movie_titles = extracted_titles
+        
+        if not movie_titles:
+            return {
+                'type': 'comp_titles',
+                'message': "I'd be happy to help you find comparable titles! Please specify which movie you'd like comp titles for. For example: 'What are the best comp titles for Twisters?' or 'Find comparable titles for Dune: Part Two'.",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': '100%',
+                'query_type': 'comp_titles'
+            }
+        
+        # If we have multiple suggested movies (from general comp titles query), show them
+        if len(movie_titles) > 1 and not any(movie.lower() in query.lower() for movie in movie_titles):
+            response = "I'd be happy to help you find comparable titles! Here are some popular movies you can ask about:\n\n"
+            for i, movie in enumerate(movie_titles, 1):
+                response += f"{i}. **{movie}**\n"
+            response += f"\nPlease specify which movie you'd like comp titles for. For example: 'What are the best comp titles for {movie_titles[0]}?'"
+            
+            return {
+                'type': 'comp_titles',
+                'message': response,
+                'data': {'suggested_movies': movie_titles},
+                'sources': None,
+                'retrieved_count': len(movie_titles),
+                'accuracy': '100%',
+                'query_type': 'comp_titles'
+            }
         
         movie_title = movie_titles[0]
         
         try:
-            # Find the target movie
-            target_movie = FilmPerformanceSummary.objects.filter(
+            # Find the target movie from raw Movie table (more accurate data)
+            target_movie = Movie.objects.filter(
                 title__icontains=movie_title
             ).first()
             
             if not target_movie:
-                return {'error': f'Movie "{movie_title}" not found'}
+                return {
+                    'type': 'comp_titles',
+                    'message': f"I don't have data for '{movie_title}' in my database. I can provide comp titles for movies like: Twisters, Dune: Part Two, Joker: Folie a Deux, Monkey Man, Homestead, Weapons, Superman, Fantastic Four, and Jurassic World Rebirth. Could you please specify one of these movies?",
+                    'data': None,
+                    'sources': None,
+                    'retrieved_count': 0,
+                    'accuracy': '100%',
+                    'query_type': 'comp_titles'
+                }
             
-            # Find comparable movies using sophisticated matching
-            comp_movies = FilmPerformanceSummary.objects.filter(
-                Q(genre=target_movie.genre) | Q(rating=target_movie.rating),
-                year=target_movie.year
-            ).exclude(title=target_movie.title).order_by('-total_sales')[:10]
+            # Find comparable movies using raw Movie data with correct sales calculation
+            comp_movies = Movie.objects.filter(
+                Q(genre=target_movie.genre) | Q(rating=target_movie.rating)
+            ).exclude(title__icontains=movie_title).values('title', 'genre', 'rating', 'studio_name').distinct()
             
-            # Calculate similarity scores
+            # Calculate accurate sales for each comparable movie
             comp_analysis = []
             for comp in comp_movies:
-                similarity_score = self._calculate_similarity_score(target_movie, comp)
-                comp_analysis.append({
-                    'title': comp.title,
-                    'genre': comp.genre,
-                    'rating': comp.rating,
-                    'studio': comp.studio_name,
-                    'total_sales': comp.total_sales,
-                    'occupancy': comp.overall_occupancy,
-                    'dod_growth': comp.dod_growth,
-                    'similarity_score': similarity_score
-                })
+                # Calculate sales using correct formula: Price * Reserved
+                comp_records = Movie.objects.filter(
+                    title__icontains=comp['title']
+                )
+                
+                total_sales = 0.0
+                total_reserved = 0
+                total_seats = 0
+                valid_records = 0
+                
+                for record in comp_records:
+                    if record.reserved and record.reserved > 0:
+                        try:
+                            # Convert price string to float (remove $ sign)
+                            price_str = str(record.price).replace('$', '').replace(',', '').strip()
+                            if ',' in price_str:
+                                price_str = price_str.split(',')[0]
+                            price_float = float(price_str) if price_str else 0.0
+                            
+                            # Calculate sales for this record: Price * Reserved
+                            record_sales = price_float * record.reserved
+                            total_sales += record_sales
+                            total_reserved += record.reserved
+                            total_seats += record.total_seats
+                            valid_records += 1
+                            
+                        except (ValueError, TypeError):
+                            continue
+                
+                # Calculate occupancy rate
+                occupancy_rate = (total_reserved / total_seats * 100) if total_seats > 0 else 0.0
+                
+                if valid_records > 0:  # Only include movies with valid data
+                    comp_analysis.append({
+                        'title': comp['title'],
+                        'genre': comp['genre'],
+                        'rating': comp['rating'],
+                        'studio': comp['studio_name'],
+                        'total_sales': round(total_sales, 2),
+                        'occupancy': round(occupancy_rate, 1),
+                        'total_reserved': total_reserved,
+                        'total_seats': total_seats,
+                        'valid_records': valid_records
+                    })
             
-            # Sort by similarity score
-            comp_analysis.sort(key=lambda x: x['similarity_score'], reverse=True)
+            # Sort by total sales (descending)
+            comp_analysis.sort(key=lambda x: x['total_sales'], reverse=True)
             
+            # Show more comp titles (up to 6 instead of 3)
             data = {
                 'target_movie': movie_title,
-                'comp_titles': comp_analysis[:3],
+                'comp_titles': comp_analysis[:6],  # Show up to 6 comp titles
                 'analysis': f"Found {len(comp_analysis)} comparable titles based on genre ({target_movie.genre}), rating ({target_movie.rating}), and performance patterns."
             }
             
@@ -2104,6 +2429,38 @@ If you implement these changes, you could potentially increase total revenue by 
                 result = self.handle_daily_earnings_query(query, query_intent)
             elif query_type == 'performance_comparison':
                 result = self.handle_performance_comparison_query(query, query_intent)
+            elif query_type == 'date_movies':
+                result = self.handle_date_movies_query(query, query_intent)
+            elif query_type == 'theater_location':
+                result = self.handle_theater_location_query(query, query_intent)
+            elif query_type == 'amenities_format':
+                result = self.handle_amenities_format_query(query, query_intent)
+            elif query_type == 'pricing_seats':
+                result = self.handle_pricing_seats_query(query, query_intent)
+            elif query_type == 'studio_genre':
+                result = self.handle_studio_genre_query(query, query_intent)
+            elif query_type == 'circuit_comparison':
+                result = self.handle_circuit_comparison_query(query, query_intent)
+            elif query_type == 'auditorium_analysis':
+                result = self.handle_auditorium_analysis_query(query, query_intent)
+            elif query_type == 'runtime_filter':
+                result = self.handle_runtime_filter_query(query, query_intent)
+            elif query_type == 'international_screenings':
+                result = self.handle_international_screenings_query(query, query_intent)
+            elif query_type == 'imax_theater_count':
+                result = self.handle_imax_theater_count_query(query, query_intent)
+            elif query_type == 'movie_listing':
+                result = self.handle_movie_listing_query(query, query_intent)
+            elif query_type == 'theater_listing':
+                result = self.handle_theater_listing_query(query, query_intent)
+            elif query_type == 'theater_update':
+                result = self.handle_theater_update_query(query, query_intent)
+            elif query_type == 'peak_hours_analysis':
+                result = self.handle_peak_hours_analysis_query(query, query_intent)
+            elif query_type == 'occupancy_rate_analysis':
+                result = self.handle_occupancy_rate_analysis_query(query, query_intent)
+            elif query_type == 'movie_performance':
+                result = self.handle_movie_performance_query(query, query_intent)
             else:
                 # Fallback to general analysis
                 result = {
@@ -2618,6 +2975,1231 @@ If you implement these changes, you could potentially increase total revenue by 
                 'query_type': 'price_analysis'
             }
     
+    def handle_date_movies_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle queries about movies showing on specific dates"""
+        try:
+            # Extract date from query
+            date_match = re.search(r'(\d{4}-\d{2}-\d{2})', query)
+            if not date_match:
+                return {
+                    'type': 'date_movies',
+                    'message': "Please specify a date in YYYY-MM-DD format. For example: 'What movies are showing on 2025-09-30?'",
+                    'data': None,
+                    'sources': None,
+                    'retrieved_count': 0,
+                    'accuracy': '100%',
+                    'query_type': 'date_movies'
+                }
+            
+            target_date = date_match.group(1)
+            
+            # Get movies showing on that date
+            movies_on_date = Movie.objects.filter(
+                running_date=target_date
+            ).values('mm_id', 'title').distinct()
+            
+            if not movies_on_date.exists():
+                return {
+                    'type': 'date_movies',
+                    'message': f"No movies found showing on {target_date}. Please try a different date.",
+                    'data': {'date': target_date, 'movie_count': 0},
+                    'sources': None,
+                    'retrieved_count': 0,
+                    'accuracy': '100%',
+                    'query_type': 'date_movies'
+                }
+            
+            # Format response
+            movie_list = [movie['title'] for movie in movies_on_date]
+            movie_count = len(movie_list)
+            
+            response = f"**Movies showing on {target_date}:**\n\n"
+            for i, movie in enumerate(movie_list, 1):
+                response += f"{i}. {movie}\n"
+            
+            response += f"\n**Total movies showing: {movie_count}**"
+            
+            return {
+                'type': 'date_movies',
+                'message': response,
+                'data': {
+                    'date': target_date,
+                    'movies': movie_list,
+                    'movie_count': movie_count
+                },
+                'sources': None,
+                'retrieved_count': movie_count,
+                'accuracy': '100%',
+                'query_type': 'date_movies'
+            }
+            
+        except Exception as e:
+            logger.error(f"Date movies query error: {e}")
+            return {
+                'type': 'date_movies',
+                'message': f"Error retrieving movies for the specified date: {str(e)}",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': 'Error',
+                'query_type': 'date_movies'
+            }
+    
+    def handle_theater_location_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle queries about theaters in specific locations"""
+        try:
+            # Extract location from query
+            location_match = re.search(r'in (.+?)(?:\?|$)', query.lower())
+            if not location_match:
+                return {
+                    'type': 'theater_location',
+                    'message': "Please specify a location. For example: 'List all theaters in St. Petersburg' or 'Show theaters in Los Angeles'",
+                    'data': None,
+                    'sources': None,
+                    'retrieved_count': 0,
+                    'accuracy': '100%',
+                    'query_type': 'theater_location'
+                }
+            
+            location = location_match.group(1).strip()
+            
+            # Search for theaters in the location (city or DMA)
+            theaters = Movie.objects.filter(
+                Q(theater_city__icontains=location) | Q(dma__icontains=location)
+            ).values('theater_id', 'theater_name', 'theater_address', 'theater_city', 'theater_state').distinct()
+            
+            if not theaters.exists():
+                return {
+                    'type': 'theater_location',
+                    'message': f"No theaters found in {location}. Please try a different location.",
+                    'data': {'location': location, 'theater_count': 0},
+                    'sources': None,
+                    'retrieved_count': 0,
+                    'accuracy': '100%',
+                    'query_type': 'theater_location'
+                }
+            
+            # Format response
+            theater_list = []
+            for theater in theaters:
+                theater_list.append({
+                    'theater_id': theater['theater_id'],
+                    'name': theater['theater_name'],
+                    'address': theater['theater_address'],
+                    'city': theater['theater_city'],
+                    'state': theater['theater_state']
+                })
+            
+            response = f"**Theaters in {location.title()}:**\n\n"
+            for i, theater in enumerate(theater_list, 1):
+                response += f"{i}. **{theater['name']}**\n"
+                response += f"   ID: {theater['theater_id']}\n"
+                response += f"   Address: {theater['address']}\n"
+                response += f"   Location: {theater['city']}, {theater['state']}\n\n"
+            
+            response += f"**Total theaters: {len(theater_list)}**"
+            
+            return {
+                'type': 'theater_location',
+                'message': response,
+                'data': {
+                    'location': location,
+                    'theaters': theater_list,
+                    'theater_count': len(theater_list)
+                },
+                'sources': None,
+                'retrieved_count': len(theater_list),
+                'accuracy': '100%',
+                'query_type': 'theater_location'
+            }
+            
+        except Exception as e:
+            logger.error(f"Theater location query error: {e}")
+            return {
+                'type': 'theater_location',
+                'message': f"Error retrieving theaters for {location}: {str(e)}",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': 'Error',
+                'query_type': 'theater_location'
+            }
+    
+    def handle_amenities_format_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle queries about amenities and screen formats"""
+        try:
+            query_lower = query.lower()
+            
+            # Check for theater ID amenities query
+            theater_id_match = re.search(r'theater.*?(\d+)', query)
+            if theater_id_match and 'amenities' in query_lower:
+                theater_id = theater_id_match.group(1)
+                
+                amenities = Movie.objects.filter(
+                    theater_id=theater_id
+                ).values_list('amenities', flat=True).distinct()
+                
+                amenities_list = [a for a in amenities if a and a.strip()]
+                
+                if not amenities_list:
+                    return {
+                        'type': 'amenities_format',
+                        'message': f"No amenities found for theater ID {theater_id}.",
+                        'data': {'theater_id': theater_id, 'amenities': []},
+                        'sources': None,
+                        'retrieved_count': 0,
+                        'accuracy': '100%',
+                        'query_type': 'amenities_format'
+                    }
+                
+                response = f"**Amenities available at theater ID {theater_id}:**\n\n"
+                for amenity in amenities_list:
+                    response += f"• {amenity}\n"
+                
+                return {
+                    'type': 'amenities_format',
+                    'message': response,
+                    'data': {'theater_id': theater_id, 'amenities': amenities_list},
+                    'sources': None,
+                    'retrieved_count': len(amenities_list),
+                    'accuracy': '100%',
+                    'query_type': 'amenities_format'
+                }
+            
+            # Check for format count queries (IMAX, 4DX, etc.)
+            if 'imax' in query_lower and 'count' in query_lower:
+                imax_count = Movie.objects.filter(screen_format__icontains='IMAX').values('mm_id').distinct().count()
+                response = f"**IMAX Movies Count:** {imax_count:,}"
+                
+                return {
+                    'type': 'amenities_format',
+                    'message': response,
+                    'data': {'format': 'IMAX', 'count': imax_count},
+                    'sources': None,
+                    'retrieved_count': imax_count,
+                    'accuracy': '100%',
+                    'query_type': 'amenities_format'
+                }
+            
+            if '4dx' in query_lower and 'count' in query_lower:
+                fourdx_count = Movie.objects.filter(screen_format__icontains='4DX').values('mm_id').distinct().count()
+                response = f"**4DX Movies Count:** {fourdx_count:,}"
+                
+                return {
+                    'type': 'amenities_format',
+                    'message': response,
+                    'data': {'format': '4DX', 'count': fourdx_count},
+                    'sources': None,
+                    'retrieved_count': fourdx_count,
+                    'accuracy': '100%',
+                    'query_type': 'amenities_format'
+                }
+            
+            # Generic format query
+            format_match = re.search(r'(.+) format.*movies?', query_lower)
+            if format_match:
+                format_name = format_match.group(1).strip()
+                format_count = Movie.objects.filter(screen_format__icontains=format_name).values('mm_id').distinct().count()
+                response = f"**{format_name.title()} Format Movies Count:** {format_count:,}"
+                
+                return {
+                    'type': 'amenities_format',
+                    'message': response,
+                    'data': {'format': format_name, 'count': format_count},
+                    'sources': None,
+                    'retrieved_count': format_count,
+                    'accuracy': '100%',
+                    'query_type': 'amenities_format'
+                }
+            
+            return {
+                'type': 'amenities_format',
+                'message': "Please specify what you're looking for. Examples: 'What amenities are available at theater ID 10314?' or 'Count all movies in IMAX format'",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': '100%',
+                'query_type': 'amenities_format'
+            }
+            
+        except Exception as e:
+            logger.error(f"Amenities format query error: {e}")
+            return {
+                'type': 'amenities_format',
+                'message': f"Error retrieving amenities/format information: {str(e)}",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': 'Error',
+                'query_type': 'amenities_format'
+            }
+    
+    def handle_pricing_seats_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle queries about pricing and seat availability"""
+        try:
+            query_lower = query.lower()
+            
+            # Movies under specific price
+            price_match = re.search(r'under.*?\$(\d+)', query_lower)
+            if price_match:
+                max_price = float(price_match.group(1))
+                
+                movies_under_price = Movie.objects.filter(
+                    price__lt=max_price
+                ).values('title').distinct()
+                
+                movie_list = [movie['title'] for movie in movies_under_price]
+                
+                response = f"**Movies with ticket prices under ${max_price}:**\n\n"
+                for i, movie in enumerate(movie_list, 1):
+                    response += f"{i}. {movie}\n"
+                
+                response += f"\n**Total movies: {len(movie_list)}**"
+                
+                return {
+                    'type': 'pricing_seats',
+                    'message': response,
+                    'data': {'max_price': max_price, 'movies': movie_list, 'count': len(movie_list)},
+                    'sources': None,
+                    'retrieved_count': len(movie_list),
+                    'accuracy': '100%',
+                    'query_type': 'pricing_seats'
+                }
+            
+            # Shows with more than X available seats
+            seats_match = re.search(r'more.*?than.*?(\d+)', query_lower)
+            if seats_match and 'seat' in query_lower:
+                min_seats = int(seats_match.group(1))
+                
+                shows_with_seats = Movie.objects.filter(
+                    available__gt=min_seats
+                ).values('mm_id', 'theater_id', 'auditorium', 'available', 'title')
+                
+                response = f"**Shows with more than {min_seats:,} available seats:**\n\n"
+                for i, show in enumerate(shows_with_seats[:10], 1):  # Limit to 10 for readability
+                    response += f"{i}. **{show['title']}**\n"
+                    response += f"   Theater ID: {show['theater_id']}\n"
+                    response += f"   Auditorium: {show['auditorium']}\n"
+                    response += f"   Available Seats: {show['available']:,}\n\n"
+                
+                if len(shows_with_seats) > 10:
+                    response += f"... and {len(shows_with_seats) - 10} more shows\n"
+                
+                response += f"\n**Total shows: {len(shows_with_seats)}**"
+                
+                return {
+                    'type': 'pricing_seats',
+                    'message': response,
+                    'data': {'min_seats': min_seats, 'shows': list(shows_with_seats), 'count': len(shows_with_seats)},
+                    'sources': None,
+                    'retrieved_count': len(shows_with_seats),
+                    'accuracy': '100%',
+                    'query_type': 'pricing_seats'
+                }
+            
+            # Max ticket prices
+            if 'max' in query_lower and 'ticket' in query_lower and 'price' in query_lower:
+                if 'senior' in query_lower:
+                    from django.db import models
+                    max_senior = Movie.objects.filter(senior__isnull=False).aggregate(
+                        max_price=models.Max('senior')
+                    )['max_price']
+                    response = f"**Maximum senior ticket price: ${max_senior:.2f}**"
+                    
+                    return {
+                        'type': 'pricing_seats',
+                        'message': response,
+                        'data': {'price_type': 'senior', 'max_price': float(max_senior)},
+                        'sources': None,
+                        'retrieved_count': 1,
+                        'accuracy': '100%',
+                        'query_type': 'pricing_seats'
+                    }
+                
+                elif 'child' in query_lower:
+                    from django.db import models
+                    
+                    # Check if query mentions a specific circuit
+                    if 'circuit' in query_lower and 'amc' in query_lower:
+                        max_child = Movie.objects.filter(
+                            child__isnull=False,
+                            circuit_name__icontains='AMC Entertainment Inc'
+                        ).aggregate(
+                            max_price=models.Max('child')
+                        )['max_price']
+                        response = f"**Maximum child ticket price for AMC Entertainment Inc: ${max_child:.2f}**"
+                    else:
+                        max_child = Movie.objects.filter(child__isnull=False).aggregate(
+                            max_price=models.Max('child')
+                        )['max_price']
+                        response = f"**Maximum child ticket price: ${max_child:.2f}**"
+                    
+                    return {
+                        'type': 'pricing_seats',
+                        'message': response,
+                        'data': {'price_type': 'child', 'max_price': float(max_child)},
+                        'sources': None,
+                        'retrieved_count': 1,
+                        'accuracy': '100%',
+                        'query_type': 'pricing_seats'
+                    }
+                
+                else:
+                    max_price = Movie.objects.aggregate(max_price=models.Max('price'))['max_price']
+                    response = f"**Maximum ticket price: ${max_price:.2f}**"
+                    
+                    return {
+                        'type': 'pricing_seats',
+                        'message': response,
+                        'data': {'price_type': 'general', 'max_price': float(max_price)},
+                        'sources': None,
+                        'retrieved_count': 1,
+                        'accuracy': '100%',
+                        'query_type': 'pricing_seats'
+                    }
+            
+            return {
+                'type': 'pricing_seats',
+                'message': "Please specify what pricing information you need. Examples: 'Show me all movies with ticket prices under $15' or 'What shows have more than 1400 available seats?'",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': '100%',
+                'query_type': 'pricing_seats'
+            }
+            
+        except Exception as e:
+            logger.error(f"Pricing seats query error: {e}")
+            return {
+                'type': 'pricing_seats',
+                'message': f"Error retrieving pricing/seat information: {str(e)}",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': 'Error',
+                'query_type': 'pricing_seats'
+            }
+    
+    def handle_studio_genre_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle queries about studios and genres"""
+        try:
+            query_lower = query.lower()
+            
+            # Extract date if present
+            date_match = re.search(r'(\d{4}-\d{2}-\d{2})', query)
+            target_date = date_match.group(1) if date_match else None
+            
+            # Genre queries
+            if 'genres' in query_lower and target_date:
+                genres = Movie.objects.filter(
+                    running_date=target_date
+                ).values_list('genre', flat=True).distinct()
+                
+                genre_list = [g for g in genres if g and g.strip()]
+                
+                response = f"**Genres playing on {target_date}:**\n\n"
+                for genre in genre_list:
+                    response += f"• {genre}\n"
+                
+                return {
+                    'type': 'studio_genre',
+                    'message': response,
+                    'data': {'date': target_date, 'genres': genre_list, 'count': len(genre_list)},
+                    'sources': None,
+                    'retrieved_count': len(genre_list),
+                    'accuracy': '100%',
+                    'query_type': 'studio_genre'
+                }
+            
+            # Studio queries
+            elif 'studios' in query_lower and target_date:
+                studios = Movie.objects.filter(
+                    release_date=target_date
+                ).values_list('studio_name', flat=True).distinct()
+                
+                studio_list = [s for s in studios if s and s.strip()]
+                
+                response = f"**Studios releasing movies on {target_date}:**\n\n"
+                for studio in studio_list:
+                    response += f"• {studio}\n"
+                
+                return {
+                    'type': 'studio_genre',
+                    'message': response,
+                    'data': {'date': target_date, 'studios': studio_list, 'count': len(studio_list)},
+                    'sources': None,
+                    'retrieved_count': len(studio_list),
+                    'accuracy': '100%',
+                    'query_type': 'studio_genre'
+                }
+            
+            # Action movies by studio
+            elif 'action' in query_lower and 'warner' in query_lower:
+                action_movies = Movie.objects.filter(
+                    genre='Action',
+                    studio_name='Warner Bros.'
+                ).values_list('title', flat=True).distinct()
+                
+                movie_list = [m for m in action_movies if m and m.strip()]
+                
+                response = f"**Action movies released by Warner Bros.:**\n\n"
+                for movie in movie_list:
+                    response += f"• {movie}\n"
+                
+                return {
+                    'type': 'studio_genre',
+                    'message': response,
+                    'data': {'genre': 'Action', 'studio': 'Warner Bros.', 'movies': movie_list, 'count': len(movie_list)},
+                    'sources': None,
+                    'retrieved_count': len(movie_list),
+                    'accuracy': '100%',
+                    'query_type': 'studio_genre'
+                }
+            
+            return {
+                'type': 'studio_genre',
+                'message': "Please specify what studio/genre information you need. Examples: 'What genres are playing for 2024-01-27?' or 'Which studios have movies releasing on 2024-07-19?'",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': '100%',
+                'query_type': 'studio_genre'
+            }
+            
+        except Exception as e:
+            logger.error(f"Studio genre query error: {e}")
+            return {
+                'type': 'studio_genre',
+                'message': f"Error retrieving studio/genre information: {str(e)}",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': 'Error',
+                'query_type': 'studio_genre'
+            }
+    
+    def handle_movie_listing_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle queries about listing all movies"""
+        try:
+            query_lower = query.lower()
+            
+            # Get all unique movie titles
+            all_movies = Movie.objects.values_list('title', flat=True).distinct().order_by('title')
+            
+            if all_movies:
+                movie_list = [movie for movie in all_movies if movie and movie.strip()]
+                
+                response = f"**All Movie Titles:**\n\n"
+                for i, movie in enumerate(movie_list, 1):
+                    response += f"{i}. {movie}\n"
+                
+                response += f"\n**Total movies: {len(movie_list)}**"
+                
+                return {
+                    'type': 'movie_listing',
+                    'message': response,
+                    'data': {
+                        'movies': movie_list,
+                        'count': len(movie_list)
+                    },
+                    'sources': None,
+                    'retrieved_count': len(movie_list),
+                    'accuracy': '100%',
+                    'query_type': 'movie_listing'
+                }
+            else:
+                return {
+                    'type': 'movie_listing',
+                    'message': "No movies found in the database.",
+                    'data': None,
+                    'sources': None,
+                    'retrieved_count': 0,
+                    'accuracy': '100%',
+                    'query_type': 'movie_listing'
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in movie listing query: {e}")
+            return {
+                'type': 'movie_listing',
+                'message': f"Error retrieving movie list: {str(e)}",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': '0%',
+                'query_type': 'movie_listing'
+            }
+
+    def handle_theater_listing_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle queries about listing all unique theaters"""
+        try:
+            query_lower = query.lower()
+            
+            # Get all unique theaters with their details
+            theaters = Movie.objects.values(
+                'theater_id', 'theater_name', 'theater_city', 'theater_state', 'circuit_name'
+            ).distinct().order_by('theater_name')
+            
+            if theaters:
+                theater_list = []
+                for theater in theaters:
+                    if theater['theater_name'] and theater['theater_name'].strip():
+                        theater_list.append({
+                            'id': theater['theater_id'],
+                            'name': theater['theater_name'],
+                            'city': theater['theater_city'],
+                            'state': theater['theater_state'],
+                            'circuit': theater['circuit_name']
+                        })
+                
+                response = f"**All Unique Theaters:**\n\n"
+                for i, theater in enumerate(theater_list, 1):
+                    response += f"{i}. **{theater['name']}**\n"
+                    response += f"   • Theater ID: {theater['id']}\n"
+                    response += f"   • Location: {theater['city']}, {theater['state']}\n"
+                    response += f"   • Circuit: {theater['circuit']}\n\n"
+                
+                response += f"**Total unique theaters: {len(theater_list)}**"
+                
+                return {
+                    'type': 'theater_listing',
+                    'message': response,
+                    'data': {
+                        'theaters': theater_list,
+                        'count': len(theater_list)
+                    },
+                    'sources': None,
+                    'retrieved_count': len(theater_list),
+                    'accuracy': '100%',
+                    'query_type': 'theater_listing'
+                }
+            else:
+                return {
+                    'type': 'theater_listing',
+                    'message': "No theaters found in the database.",
+                    'data': None,
+                    'sources': None,
+                    'retrieved_count': 0,
+                    'accuracy': '100%',
+                    'query_type': 'theater_listing'
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in theater listing query: {e}")
+            return {
+                'type': 'theater_listing',
+                'message': f"Error retrieving theater list: {str(e)}",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': '0%',
+                'query_type': 'theater_listing'
+            }
+
+    def handle_theater_update_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle queries about theater last update times"""
+        try:
+            query_lower = query.lower()
+            
+            # Extract theater ID from query
+            theater_match = re.search(r'theater\s*(\d+)', query_lower)
+            if not theater_match:
+                theater_match = re.search(r'(\d+)', query)
+            
+            if theater_match:
+                theater_id = theater_match.group(1)
+                
+                # Get last update for the theater
+                last_update = Movie.objects.filter(
+                    theater_id=theater_id
+                ).aggregate(
+                    last_update=models.Max('last_updates')
+                )['last_update']
+                
+                if last_update:
+                    response = f"**Last Update for Theater {theater_id}:**\n\n"
+                    response += f"• **Last Update**: {last_update}\n"
+                    
+                    return {
+                        'type': 'theater_update',
+                        'message': response,
+                        'data': {
+                            'theater_id': theater_id,
+                            'last_update': str(last_update)
+                        },
+                        'sources': None,
+                        'retrieved_count': 1,
+                        'accuracy': '100%',
+                        'query_type': 'theater_update'
+                    }
+                else:
+                    return {
+                        'type': 'theater_update',
+                        'message': f"No update data found for theater {theater_id}.",
+                        'data': None,
+                        'sources': None,
+                        'retrieved_count': 0,
+                        'accuracy': '100%',
+                        'query_type': 'theater_update'
+                    }
+            else:
+                return {
+                    'type': 'theater_update',
+                    'message': "Please specify a theater ID. Example: 'When was the last update for theater 48190?'",
+                    'data': None,
+                    'sources': None,
+                    'retrieved_count': 0,
+                    'accuracy': '100%',
+                    'query_type': 'theater_update'
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in theater update query: {e}")
+            return {
+                'type': 'theater_update',
+                'message': f"Error retrieving theater update: {str(e)}",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': '0%',
+                'query_type': 'theater_update'
+            }
+
+    def handle_peak_hours_analysis_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle queries about peak showtime hours based on reservations"""
+        try:
+            query_lower = query.lower()
+            
+            # Extract hour from date_sh field and sum reservations by hour
+            from django.db.models import Sum
+            from django.db import connection
+            
+            # Use raw SQL to extract hour from date_sh and group by hour
+            with connection.cursor() as cursor:
+                cursor.execute("""
+                    SELECT EXTRACT(HOUR FROM time_sh) AS hour, 
+                           SUM(reserved) AS total_reserved 
+                    FROM movies_movie 
+                    WHERE time_sh IS NOT NULL AND reserved IS NOT NULL
+                    GROUP BY hour 
+                    ORDER BY total_reserved DESC
+                """)
+                
+                results = cursor.fetchall()
+            
+            if results:
+                response = f"**Peak Showtime Hours Based on Reservations:**\n\n"
+                
+                hour_data = []
+                for hour, total_reserved in results:
+                    hour_int = int(hour) if hour else 0
+                    hour_data.append({
+                        'hour': hour_int,
+                        'total_reserved': float(total_reserved) if total_reserved else 0.0
+                    })
+                    
+                    # Format hour display
+                    hour_display = f"{hour_int:02d}:00" if hour_int < 24 else "24:00"
+                    response += f"• **{hour_display}**: {total_reserved:,.0f} reservations\n"
+                
+                response += f"\n**Peak Hour**: {hour_data[0]['hour']:02d}:00 with {hour_data[0]['total_reserved']:,.0f} reservations"
+                
+                return {
+                    'type': 'peak_hours_analysis',
+                    'message': response,
+                    'data': {
+                        'hour_data': hour_data,
+                        'peak_hour': hour_data[0]['hour'],
+                        'peak_reservations': hour_data[0]['total_reserved']
+                    },
+                    'sources': None,
+                    'retrieved_count': len(results),
+                    'accuracy': '100%',
+                    'query_type': 'peak_hours_analysis'
+                }
+            else:
+                return {
+                    'type': 'peak_hours_analysis',
+                    'message': "No showtime data found for peak hours analysis.",
+                    'data': None,
+                    'sources': None,
+                    'retrieved_count': 0,
+                    'accuracy': '100%',
+                    'query_type': 'peak_hours_analysis'
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in peak hours analysis query: {e}")
+            return {
+                'type': 'peak_hours_analysis',
+                'message': f"Error analyzing peak hours: {str(e)}",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': '0%',
+                'query_type': 'peak_hours_analysis'
+            }
+
+    def handle_occupancy_rate_analysis_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle queries about average seat occupancy rates for specific movies"""
+        try:
+            query_lower = query.lower()
+            
+            # Extract movie title from query
+            movie_titles = self._extract_movie_titles_from_query(query)
+            
+            if movie_titles:
+                movie_title = movie_titles[0]  # Use first movie found
+                
+                # Calculate average occupancy rate using the formula: (reserved * 100.0) / actual_total_seats
+                from django.db.models import Avg, Case, When, FloatField
+                from django.db import connection
+                
+                # Use raw SQL to calculate occupancy rate properly
+                with connection.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT AVG((reserved * 100.0) / actual_total_seats) AS occupancy_rate 
+                        FROM movies_movie 
+                        WHERE actual_total_seats > 0 
+                        AND title ILIKE %s
+                    """, [f'%{movie_title}%'])
+                    
+                    result = cursor.fetchone()
+                
+                if result and result[0] is not None:
+                    occupancy_rate = float(result[0])
+                    
+                    response = f"**Average Seat Occupancy Rate for {movie_title}:**\n\n"
+                    response += f"• **Average Occupancy Rate**: {occupancy_rate:.6f}%\n"
+                    response += f"• **Movie**: {movie_title}\n"
+                    response += f"• **Calculation**: (Reserved × 100) ÷ Actual Total Seats\n"
+                    
+                    return {
+                        'type': 'occupancy_rate_analysis',
+                        'message': response,
+                        'data': {
+                            'movie_title': movie_title,
+                            'occupancy_rate': occupancy_rate,
+                            'calculation_formula': '(reserved * 100.0) / actual_total_seats'
+                        },
+                        'sources': None,
+                        'retrieved_count': 1,
+                        'accuracy': '100%',
+                        'query_type': 'occupancy_rate_analysis'
+                    }
+                else:
+                    return {
+                        'type': 'occupancy_rate_analysis',
+                        'message': f"No occupancy data found for movie '{movie_title}' with valid seat counts.",
+                        'data': None,
+                        'sources': None,
+                        'retrieved_count': 0,
+                        'accuracy': '100%',
+                        'query_type': 'occupancy_rate_analysis'
+                    }
+            else:
+                return {
+                    'type': 'occupancy_rate_analysis',
+                    'message': "Please specify a movie title. Example: 'What is the average seat occupancy rate across all theaters for Homestead Movie?'",
+                    'data': None,
+                    'sources': None,
+                    'retrieved_count': 0,
+                    'accuracy': '100%',
+                    'query_type': 'occupancy_rate_analysis'
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in occupancy rate analysis query: {e}")
+            return {
+                'type': 'occupancy_rate_analysis',
+                'message': f"Error calculating occupancy rate: {str(e)}",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': '0%',
+                'query_type': 'occupancy_rate_analysis'
+            }
+
+    def handle_movie_performance_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle generic movie performance queries for any movie"""
+        try:
+            query_lower = query.lower()
+            
+            # Extract movie title from query
+            movie_titles = self._extract_movie_titles_from_query(query)
+            
+            if movie_titles:
+                movie_title = movie_titles[0]
+                
+                # Calculate comprehensive performance metrics
+                performance_data = self._calculate_movie_performance_metrics(movie_title)
+                
+                # Determine what specific metrics to show based on query
+                response = f"**Performance Analysis for {movie_title}:**\n\n"
+                
+                if any(word in query_lower for word in ['sales', 'revenue', 'total sales']):
+                    response += f"• **Total Sales**: ${performance_data['total_sales']:,.2f}\n"
+                
+                if any(word in query_lower for word in ['occupancy', 'seat occupancy']):
+                    response += f"• **Average Occupancy Rate**: {performance_data['occupancy_rate']:.1f}%\n"
+                
+                if any(word in query_lower for word in ['showings', 'shows', 'total showings']):
+                    response += f"• **Total Showings**: {performance_data['num_showings']:,}\n"
+                
+                if any(word in query_lower for word in ['theaters', 'theater count', 'theater penetration']):
+                    response += f"• **Theater Count**: {performance_data['unique_theaters']:,}\n"
+                
+                if any(word in query_lower for word in ['price', 'ticket price', 'average price']):
+                    response += f"• **Average Ticket Price**: ${performance_data['avg_price']:.2f}\n"
+                
+                # If no specific metrics mentioned, show comprehensive overview
+                if not any(word in query_lower for word in ['sales', 'occupancy', 'showings', 'theaters', 'price']):
+                    response += f"• **Total Showings**: {performance_data['num_showings']:,}\n"
+                    response += f"• **Theater Count**: {performance_data['unique_theaters']:,}\n"
+                    response += f"• **Average Occupancy Rate**: {performance_data['occupancy_rate']:.1f}%\n"
+                    response += f"• **Average Ticket Price**: ${performance_data['avg_price']:.2f}\n"
+                    response += f"• **Total Sales**: ${performance_data['total_sales']:,.2f}\n"
+                
+                response += f"\n**Movie**: {movie_title}\n"
+                response += f"**Analysis Date**: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                
+                return {
+                    'type': 'movie_performance',
+                    'message': response,
+                    'data': {
+                        'movie_title': movie_title,
+                        'performance_data': performance_data
+                    },
+                    'sources': None,
+                    'retrieved_count': 1,
+                    'accuracy': '100%',
+                    'query_type': 'movie_performance'
+                }
+            else:
+                return {
+                    'type': 'movie_performance',
+                    'message': "Please specify a movie title for performance analysis. Example: 'What is the performance of Avatar?' or 'Show me sales data for The Matrix'",
+                    'data': None,
+                    'sources': None,
+                    'retrieved_count': 0,
+                    'accuracy': '100%',
+                    'query_type': 'movie_performance'
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in movie performance query: {e}")
+            return {
+                'type': 'movie_performance',
+                'message': f"Error analyzing movie performance: {str(e)}",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': '0%',
+                'query_type': 'movie_performance'
+            }
+
+    def handle_auditorium_analysis_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle queries about auditorium analysis"""
+        try:
+            query_lower = query.lower()
+            
+            # Calculate average auditoriums per theater
+            from django.db.models import Avg, Count
+            
+            # Get auditorium count per theater
+            theater_auditorium_counts = Movie.objects.values('theater_id').annotate(
+                auditorium_count=Count('auditorium', distinct=True)
+            ).values_list('auditorium_count', flat=True)
+            
+            if theater_auditorium_counts:
+                avg_auditoriums = sum(theater_auditorium_counts) / len(theater_auditorium_counts)
+                total_theaters = len(theater_auditorium_counts)
+                
+                response = f"**Average Number of Auditoriums per Theater:**\n\n"
+                response += f"• **Average Auditoriums**: {avg_auditoriums:.4f}\n"
+                response += f"• **Total Theaters**: {total_theaters:,}\n"
+                response += f"• **Total Auditoriums**: {sum(theater_auditorium_counts):,}\n"
+                
+                return {
+                    'type': 'auditorium_analysis',
+                    'message': response,
+                    'data': {
+                        'avg_auditoriums': round(avg_auditoriums, 4),
+                        'total_theaters': total_theaters,
+                        'total_auditoriums': sum(theater_auditorium_counts)
+                    },
+                    'sources': None,
+                    'retrieved_count': total_theaters,
+                    'accuracy': '100%',
+                    'query_type': 'auditorium_analysis'
+                }
+            else:
+                return {
+                    'type': 'auditorium_analysis',
+                    'message': "No auditorium data found in the database.",
+                    'data': None,
+                    'sources': None,
+                    'retrieved_count': 0,
+                    'accuracy': '100%',
+                    'query_type': 'auditorium_analysis'
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in auditorium analysis query: {e}")
+            return {
+                'type': 'auditorium_analysis',
+                'message': f"Error analyzing auditorium data: {str(e)}",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': '0%',
+                'query_type': 'auditorium_analysis'
+            }
+
+    def handle_runtime_filter_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle queries about movies with specific runtime filters"""
+        try:
+            query_lower = query.lower()
+            
+            # Extract runtime threshold
+            runtime_match = re.search(r'(\d+)\s*minutes?', query_lower)
+            if not runtime_match:
+                runtime_match = re.search(r'longer than (\d+)', query_lower)
+                if not runtime_match:
+                    runtime_match = re.search(r'greater than (\d+)', query_lower)
+            
+            if runtime_match:
+                min_runtime = int(runtime_match.group(1))
+                
+                # Find movies with runtime longer than threshold
+                long_movies = Movie.objects.filter(
+                    runtime__gt=min_runtime
+                ).values('title', 'runtime').distinct().order_by('-runtime')
+                
+                response = f"**Movies with runtime longer than {min_runtime} minutes:**\n\n"
+                for i, movie in enumerate(long_movies, 1):
+                    response += f"{i}. **{movie['title']}** - {movie['runtime']} minutes\n"
+                
+                response += f"\n**Total movies: {len(long_movies)}**"
+                
+                return {
+                    'type': 'runtime_filter',
+                    'message': response,
+                    'data': {
+                        'min_runtime': min_runtime,
+                        'movies': list(long_movies),
+                        'count': len(long_movies)
+                    },
+                    'sources': None,
+                    'retrieved_count': len(long_movies),
+                    'accuracy': '100%',
+                    'query_type': 'runtime_filter'
+                }
+            else:
+                return {
+                    'type': 'runtime_filter',
+                    'message': "Please specify a runtime threshold. Example: 'Which movies have a runtime longer than 150 minutes?'",
+                    'data': None,
+                    'sources': None,
+                    'retrieved_count': 0,
+                    'accuracy': '100%',
+                    'query_type': 'runtime_filter'
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in runtime filter query: {e}")
+            return {
+                'type': 'runtime_filter',
+                'message': f"Error filtering movies by runtime: {str(e)}",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': '0%',
+                'query_type': 'runtime_filter'
+            }
+
+    def handle_international_screenings_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle queries about international (non-US) movie screenings"""
+        try:
+            query_lower = query.lower()
+            
+            # Find international screenings (non-US countries)
+            international_screenings = Movie.objects.exclude(
+                country__in=['USA', 'U', 'US Territory', 'United States']
+            ).values('mm_id', 'title', 'country').distinct().order_by('country', 'title')
+            
+            if international_screenings:
+                response = f"**International (Non-US) Movie Screenings:**\n\n"
+                
+                # Group by country
+                by_country = {}
+                for screening in international_screenings:
+                    country = screening['country'] or 'Unknown'
+                    if country not in by_country:
+                        by_country[country] = []
+                    by_country[country].append(screening['title'])
+                
+                for country, movies in by_country.items():
+                    response += f"**{country}:**\n"
+                    for movie in set(movies):  # Remove duplicates
+                        response += f"• {movie}\n"
+                    response += "\n"
+                
+                response += f"**Total countries: {len(by_country)}**\n"
+                response += f"**Total unique movies: {len(set(s['title'] for s in international_screenings))}**"
+                
+                return {
+                    'type': 'international_screenings',
+                    'message': response,
+                    'data': {
+                        'screenings': list(international_screenings),
+                        'by_country': by_country,
+                        'country_count': len(by_country),
+                        'movie_count': len(set(s['title'] for s in international_screenings))
+                    },
+                    'sources': None,
+                    'retrieved_count': len(international_screenings),
+                    'accuracy': '100%',
+                    'query_type': 'international_screenings'
+                }
+            else:
+                return {
+                    'type': 'international_screenings',
+                    'message': "No international movie screenings found in the database.",
+                    'data': None,
+                    'sources': None,
+                    'retrieved_count': 0,
+                    'accuracy': '100%',
+                    'query_type': 'international_screenings'
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in international screenings query: {e}")
+            return {
+                'type': 'international_screenings',
+                'message': f"Error finding international screenings: {str(e)}",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': '0%',
+                'query_type': 'international_screenings'
+            }
+
+    def handle_imax_theater_count_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle queries about IMAX theater counts"""
+        try:
+            query_lower = query.lower()
+            
+            # Count theaters offering IMAX
+            imax_theaters = Movie.objects.filter(
+                screen_format='IMAX'
+            ).values_list('theater_id', flat=True).distinct()
+            
+            theater_count = len(imax_theaters)
+            
+            response = f"**Theaters Offering IMAX:**\n\n"
+            response += f"• **Total IMAX Theaters**: {theater_count:,}\n"
+            
+            if theater_count > 0:
+                response += f"\n**IMAX Theater IDs:**\n"
+                # Show first 10 theater IDs for reference
+                for i, theater_id in enumerate(list(imax_theaters)[:10], 1):
+                    response += f"{i}. Theater ID: {theater_id}\n"
+                
+                if theater_count > 10:
+                    response += f"... and {theater_count - 10} more theaters\n"
+            
+            return {
+                'type': 'imax_theater_count',
+                'message': response,
+                'data': {
+                    'theater_count': theater_count,
+                    'theater_ids': list(imax_theaters)
+                },
+                'sources': None,
+                'retrieved_count': theater_count,
+                'accuracy': '100%',
+                'query_type': 'imax_theater_count'
+            }
+                
+        except Exception as e:
+            logger.error(f"Error in IMAX theater count query: {e}")
+            return {
+                'type': 'imax_theater_count',
+                'message': f"Error counting IMAX theaters: {str(e)}",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': '0%',
+                'query_type': 'imax_theater_count'
+            }
+
+    def handle_circuit_comparison_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle circuit comparison queries"""
+        try:
+            query_lower = query.lower()
+            
+            # Circuit theater count comparison
+            if 'circuit' in query_lower and ('more' in query_lower or 'vs' in query_lower):
+                amc_count = Movie.objects.filter(
+                    circuit_name='AMC Entertainment Inc'
+                ).values('theater_id').distinct().count()
+                
+                regal_count = Movie.objects.filter(
+                    circuit_name='Regal Entertainment Group'
+                ).values('theater_id').distinct().count()
+                
+                if amc_count > regal_count:
+                    winner = "AMC Entertainment Inc"
+                    winner_count = amc_count
+                    loser_count = regal_count
+                else:
+                    winner = "Regal Entertainment Group"
+                    winner_count = regal_count
+                    loser_count = amc_count
+                
+                response = f"**Circuit Theater Comparison:**\n\n"
+                response += f"• **AMC Entertainment Inc**: {amc_count:,} theaters\n"
+                response += f"• **Regal Entertainment Group**: {regal_count:,} theaters\n\n"
+                response += f"**Winner**: {winner} with {winner_count:,} theaters ({(winner_count - loser_count):,} more than the competitor)"
+                
+                return {
+                    'type': 'circuit_comparison',
+                    'message': response,
+                    'data': {
+                        'amc_theaters': amc_count,
+                        'regal_theaters': regal_count,
+                        'winner': winner,
+                        'difference': abs(amc_count - regal_count)
+                    },
+                    'sources': None,
+                    'retrieved_count': 2,
+                    'accuracy': '100%',
+                    'query_type': 'circuit_comparison'
+                }
+            
+            return {
+                'type': 'circuit_comparison',
+                'message': "Please specify what circuit comparison you need. Example: 'Which circuit has more theaters: AMC Entertainment Inc or Regal Entertainment Group?'",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': '100%',
+                'query_type': 'circuit_comparison'
+            }
+            
+        except Exception as e:
+            logger.error(f"Circuit comparison query error: {e}")
+            return {
+                'type': 'circuit_comparison',
+                'message': f"Error retrieving circuit comparison: {str(e)}",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': 'Error',
+                'query_type': 'circuit_comparison'
+            }
+    
     def handle_movie_information_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
         """Handle movie information queries using RAG + Database integration"""
         try:
@@ -2671,6 +4253,10 @@ If you implement these changes, you could potentially increase total revenue by 
                     'query_type': 'movie_information'
                 }
             
+            # Calculate performance metrics from database using the correct formula
+            # Sales Estimate = Price * Reserved (impressions)
+            performance_data = self._calculate_movie_performance_metrics(movie_title)
+            
             # Use RAG to get additional movie information
             try:
                 # Create a search query for RAG
@@ -2691,6 +4277,9 @@ If you implement these changes, you could potentially increase total revenue by 
             except Exception as e:
                 logger.warning(f"RAG search failed for {movie_title}: {e}")
                 rag_info = {}
+            
+            # Use calculated performance data instead of RAG data for metrics
+            rag_info['performance_data'] = performance_data
             
             # Generate comprehensive response
             response = self._generate_movie_info_response(movie_data, rag_info, query)
@@ -2726,6 +4315,84 @@ If you implement these changes, you could potentially increase total revenue by 
                 'retrieved_count': 0,
                 'accuracy': 'Error',
                 'query_type': 'movie_information'
+            }
+    
+    def _calculate_movie_performance_metrics(self, movie_title: str) -> Dict[str, Any]:
+        """Calculate movie performance metrics using the correct formula: Sales = Price * Reserved"""
+        try:
+            # Get all records for this movie
+            movie_records = Movie.objects.filter(title__icontains=movie_title)
+            
+            if not movie_records.exists():
+                return {
+                    'num_showings': 0,
+                    'unique_theaters': 0,
+                    'avg_price': 0.0,
+                    'total_sales': 0.0,
+                    'occupancy_rate': 0.0,
+                    'total_reserved': 0,
+                    'total_seats': 0
+                }
+            
+            # Calculate metrics
+            total_showings = movie_records.count()
+            unique_theaters = movie_records.values('theater_name').distinct().count()
+            
+            # Calculate total reserved seats and total seats
+            total_reserved = sum(record.reserved for record in movie_records if record.reserved)
+            total_seats = sum(record.total_seats for record in movie_records if record.total_seats)
+            
+            # Calculate occupancy rate
+            occupancy_rate = (total_reserved / total_seats * 100) if total_seats > 0 else 0.0
+            
+            # Calculate sales using the correct formula: Price * Reserved
+            total_sales = 0.0
+            price_sum = 0.0
+            valid_prices = 0
+            
+            for record in movie_records:
+                if record.reserved and record.reserved > 0:
+                    # Convert price string to float (remove $ sign)
+                    try:
+                        price_str = str(record.price).replace('$', '').replace(',', '').strip()
+                        if ',' in price_str:
+                            price_str = price_str.split(',')[0]  # Take first price if multiple
+                        price_float = float(price_str) if price_str else 0.0
+                        
+                        # Calculate sales for this record: Price * Reserved
+                        record_sales = price_float * record.reserved
+                        total_sales += record_sales
+                        
+                        # Track for average price calculation
+                        price_sum += price_float
+                        valid_prices += 1
+                        
+                    except (ValueError, TypeError):
+                        continue
+            
+            # Calculate average price
+            avg_price = (price_sum / valid_prices) if valid_prices > 0 else 0.0
+            
+            return {
+                'num_showings': total_showings,
+                'unique_theaters': unique_theaters,
+                'avg_price': round(avg_price, 2),
+                'total_sales': round(total_sales, 2),
+                'occupancy_rate': round(occupancy_rate, 1),
+                'total_reserved': total_reserved,
+                'total_seats': total_seats
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating performance metrics for {movie_title}: {e}")
+            return {
+                'num_showings': 0,
+                'unique_theaters': 0,
+                'avg_price': 0.0,
+                'total_sales': 0.0,
+                'occupancy_rate': 0.0,
+                'total_reserved': 0,
+                'total_seats': 0
             }
     
     def _extract_movie_info_from_rag(self, matches: List[Dict], movie_title: str) -> Dict[str, Any]:

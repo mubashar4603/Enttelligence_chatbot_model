@@ -3,7 +3,6 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from .models import Conversation, Message
 from .serializers import MessageSerializer, ConversationSerializer
-from .reference_loader import search_related_chunks
 from rest_framework import generics, permissions
 from openai import OpenAI
 from rest_framework.pagination import PageNumberPagination
@@ -12,11 +11,7 @@ from django.http import StreamingHttpResponse, JsonResponse
 import time
 import json
 from .rag_service import get_rag_service
-from .query_handler import QueryHandler
-from .enhanced_query_handler import EnhancedQueryHandler
-from .optimized_query_processor import get_query_processor
 from .intelligent_film_analytics_agent import get_intelligent_agent
-from rest_framework.permissions import IsAuthenticated
 
 
 class ChatAPIView(APIView):
