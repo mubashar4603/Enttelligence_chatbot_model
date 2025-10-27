@@ -1,0 +1,30 @@
+25 SELECTED TEST QUERIES
+================================================================================
+
+ 1. What are the best comp titles for Twisters?
+ 2. Find comparable titles for Dune: Part Two
+ 3. What are the best comp titles for Twisters last week?
+ 4. Find comp titles for Monkey Man last month
+ 5. What are comparable titles for Homestead in the last 7 days?
+ 6. Show me comp titles for Fantastic Four today
+ 7. How is Twisters performing?
+ 8. Is Dune: Part Two overperforming?
+ 9. Is Twisters overperforming last week?
+10. How is Dune: Part Two performing in the last 7 days?
+11. Performance of Weapons last week
+12. Is Monkey Man overperforming in the last 3 days?
+13. Is Twisters overperforming last week?
+14. Is Joker: Folie a Deux underperforming?
+15. Which movie overperformed most last week?
+16. What movies are underperforming this week?
+17. What is Twisters estimated sales?
+18. What is Twisters sales last week?
+19. What movies had the highest sales last week?
+20. What is the best performing movie?
+21. Which movie is overperforming?
+22. Which movie overperformed most last week?
+23. How did Twisters perform last Friday?
+24. Weekend performance for Monkey Man
+25. Thursday overperformance for Weapons
+
+================================================================================

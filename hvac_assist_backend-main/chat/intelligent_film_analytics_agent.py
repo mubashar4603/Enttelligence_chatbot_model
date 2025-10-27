@@ -351,7 +351,7 @@ class IntelligentFilmAnalyticsAgent:
                 query_type = 'theater_location'
             
             # Amenities and format queries
-            elif any(word in query_lower for word in ['amenities', 'theater id', 'imax count', '4dx count', 'format movies']):
+            elif any(word in query_lower for word in ['amenities', 'theater id', 'imax count', '4dx count', 'format movies', 'languages', 'language', 'lang']):
                 query_type = 'amenities_format'
             
             # Pricing and seat queries
@@ -565,11 +565,14 @@ class IntelligentFilmAnalyticsAgent:
                         movie_titles.append(movie.title())
                         break
             
+            # Extract time periods from query
+            time_period = self._extract_time_period(query)
+            
             return {
                 'query_type': query_type,
                 'movie_titles': movie_titles,
                 'metrics': [],
-                'time_period': '',
+                'time_period': time_period,
                 'geographic_scope': '',
                 'analysis_type': query_type,
                 'confidence': 0.9,
@@ -851,6 +854,86 @@ IMPORTANT: Base your response ONLY on the data above. Do not use any external kn
                 movie_titles = popular_movies[:3]  # Return top 3 as suggestions
         
         return movie_titles
+    
+    def _extract_time_period(self, query: str) -> Dict[str, Any]:
+        """Extract time period information from query"""
+        from datetime import datetime, timedelta
+        query_lower = query.lower()
+        result = {
+            'period': None,  # 'last_week', 'last_month', 'yesterday', 'last_7_days', etc.
+            'start_date': None,
+            'end_date': None,
+            'days': None
+        }
+        
+        today = datetime.now().date()
+        
+        # Extract specific number of days
+        days_match = re.search(r'last\s+(\d+)\s+days?', query_lower)
+        if days_match:
+            days = int(days_match.group(1))
+            result['period'] = f'last_{days}_days'
+            result['days'] = days
+            result['start_date'] = today - timedelta(days=days)
+            result['end_date'] = today
+            return result
+        
+        # Last week pattern
+        if 'last week' in query_lower or 'past week' in query_lower or 'this week' in query_lower:
+            result['period'] = 'last_week'
+            result['days'] = 7
+            # Monday of last week
+            days_since_monday = (today.weekday()) % 7
+            if today.weekday() == 6:  # Sunday
+                days_since_monday = 6
+            else:
+                days_since_monday = today.weekday()
+            result['start_date'] = today - timedelta(days=7 + days_since_monday)
+            result['end_date'] = today - timedelta(days=days_since_monday)
+            return result
+        
+        # Yesterday
+        if 'yesterday' in query_lower:
+            result['period'] = 'yesterday'
+            result['days'] = 1
+            result['start_date'] = today - timedelta(days=1)
+            result['end_date'] = today - timedelta(days=1)
+            return result
+        
+        # Last month
+        if 'last month' in query_lower or 'past month' in query_lower:
+            result['period'] = 'last_month'
+            result['days'] = 30
+            result['start_date'] = today - timedelta(days=30)
+            result['end_date'] = today
+            return result
+        
+        # Last 7 days
+        if 'last 7 days' in query_lower or 'past 7 days' in query_lower or 'week' in query_lower:
+            result['period'] = 'last_7_days'
+            result['days'] = 7
+            result['start_date'] = today - timedelta(days=7)
+            result['end_date'] = today
+            return result
+        
+        # Last 3 days
+        if 'last 3 days' in query_lower or 'past 3 days' in query_lower:
+            result['period'] = 'last_3_days'
+            result['days'] = 3
+            result['start_date'] = today - timedelta(days=3)
+            result['end_date'] = today
+            return result
+        
+        # Today or current
+        if 'today' in query_lower or 'now' in query_lower or 'current' in query_lower:
+            result['period'] = 'today'
+            result['days'] = 1
+            result['start_date'] = today
+            result['end_date'] = today
+            return result
+        
+        # Default: all data (no time filter)
+        return result
     
     def _handle_top_movies_by_reservations(self, query: str) -> Dict[str, Any]:
         """Handle top movies by reservations queries"""
@@ -1248,6 +1331,7 @@ IMPORTANT: Base your response ONLY on the data above. Do not use any external kn
     def handle_comp_titles_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
         """Handle comparable titles queries with AI enhancement"""
         movie_titles = query_intent.get('movie_titles', [])
+        time_period = query_intent.get('time_period', None)
         
         # If no specific movie mentioned, extract from query or provide general guidance
         if not movie_titles:
@@ -1303,42 +1387,75 @@ IMPORTANT: Base your response ONLY on the data above. Do not use any external kn
                     'query_type': 'comp_titles'
                 }
             
-            # Find comparable movies using raw Movie data with correct sales calculation
-            comp_movies = Movie.objects.filter(
-                Q(genre=target_movie.genre) | Q(rating=target_movie.rating)
-            ).exclude(title__icontains=movie_title).values('title', 'genre', 'rating', 'studio_name').distinct()
+            # Get target movie's release date to compare at similar stages
+            target_release_date = target_movie.release_date if target_movie.release_date else None
+            from datetime import date
+            today = date.today()
             
-            # Calculate accurate sales for each comparable movie
+            # Calculate days since release for target movie
+            target_days_since_release = None
+            if target_release_date:
+                target_days_since_release = (today - target_release_date).days
+            
+            # Find comparable movies using raw Movie data with correct sales calculation
+            comp_movies_filter = Movie.objects.filter(
+                Q(genre=target_movie.genre) | Q(rating=target_movie.rating)
+            ).exclude(title__icontains=movie_title)
+            
+            # Apply time period filter if specified
+            if time_period and time_period.get('start_date'):
+                comp_movies_filter = comp_movies_filter.filter(
+                    date_sh__gte=time_period['start_date'],
+                    date_sh__lte=time_period['end_date']
+                )
+            
+            # Get comp movies with their release dates
+            # With only 6 movies total, process all of them
+            comp_movies = list(comp_movies_filter.values('title', 'genre', 'rating', 'studio_name', 'release_date').distinct())
+            
+            # Calculate accurate sales for each comparable movie using bulk aggregation
             comp_analysis = []
             for comp in comp_movies:
                 # Calculate sales using correct formula: Price * Reserved
-                comp_records = Movie.objects.filter(
-                    title__icontains=comp['title']
+                # Start with all records for this movie
+                comp_records = Movie.objects.filter(title__icontains=comp['title'])
+                
+                # Apply time period filter if specified
+                if time_period and time_period.get('start_date'):
+                    comp_records = comp_records.filter(
+                        date_sh__gte=time_period['start_date'],
+                        date_sh__lte=time_period['end_date']
+                    )
+                
+                # When no specific time period, compare at similar release stages
+                if not time_period and comp.get('release_date') and target_days_since_release is not None:
+                    # Calculate days since release for comp movie
+                    comp_release_date = comp['release_date']
+                    comp_days_since_release = (today - comp_release_date).days if comp_release_date else None
+                    
+                    # If comp movie has been in theaters for a similar or longer time, use comparable period
+                    # Allow 20% variance in release stage for comparison
+                    if comp_days_since_release is not None and comp_days_since_release >= target_days_since_release * 0.8:
+                        # Get data from first N days after release (where N = target_days_since_release)
+                        if comp_release_date:
+                            comparable_end_date = comp_release_date + timedelta(days=target_days_since_release)
+                            comp_records = comp_records.filter(
+                                date_sh__gte=comp_release_date,
+                                date_sh__lte=comparable_end_date
+                            )
+                
+                # Use database aggregation for performance (single DB query instead of Python loop)
+                comp_aggregated = comp_records.aggregate(
+                    total_reserved=Sum('reserved'),
+                    total_seats=Sum('total_seats'),
+                    # Calculate total sales using database functions (fast!)
+                    total_sales=Sum(F('price') * F('reserved'))
                 )
                 
-                total_sales = 0.0
-                total_reserved = 0
-                total_seats = 0
-                valid_records = 0
-                
-                for record in comp_records:
-                    if record.reserved and record.reserved > 0:
-                        try:
-                            # Convert price string to float (remove $ sign)
-                            price_str = str(record.price).replace('$', '').replace(',', '').strip()
-                            if ',' in price_str:
-                                price_str = price_str.split(',')[0]
-                            price_float = float(price_str) if price_str else 0.0
-                            
-                            # Calculate sales for this record: Price * Reserved
-                            record_sales = price_float * record.reserved
-                            total_sales += record_sales
-                            total_reserved += record.reserved
-                            total_seats += record.total_seats
-                            valid_records += 1
-                            
-                        except (ValueError, TypeError):
-                            continue
+                total_sales = float(comp_aggregated['total_sales'] or 0)
+                total_reserved = int(comp_aggregated['total_reserved'] or 0)
+                total_seats = int(comp_aggregated['total_seats'] or 0)
+                valid_records = comp_records.count()
                 
                 # Calculate occupancy rate
                 occupancy_rate = (total_reserved / total_seats * 100) if total_seats > 0 else 0.0
@@ -1353,17 +1470,37 @@ IMPORTANT: Base your response ONLY on the data above. Do not use any external kn
                         'occupancy': round(occupancy_rate, 1),
                         'total_reserved': total_reserved,
                         'total_seats': total_seats,
-                        'valid_records': valid_records
+                        'valid_records': valid_records,
+                        'release_date': comp.get('release_date').isoformat() if comp.get('release_date') else None
                     })
             
             # Sort by total sales (descending)
             comp_analysis.sort(key=lambda x: x['total_sales'], reverse=True)
             
+            # Build analysis text with time period context
+            time_context = ""
+            if time_period and time_period.get('period'):
+                period_desc = time_period['period'].replace('_', ' ').title()
+                if time_period.get('start_date') and time_period.get('end_date'):
+                    time_context = f" for {period_desc} ({time_period['start_date']} to {time_period['end_date']})"
+            else:
+                # When comparing at similar release stages, add that context
+                if target_days_since_release is not None and target_days_since_release > 0:
+                    time_context = f" (comparing first {target_days_since_release} days after release)"
+            
             # Show more comp titles (up to 6 instead of 3)
+            analysis_text = f"Found {len(comp_analysis)} comparable titles based on genre ({target_movie.genre}), rating ({target_movie.rating}), and performance patterns"
+            if target_days_since_release is not None and target_days_since_release > 0 and not time_period:
+                analysis_text += f". Comparing at similar release stage (first {target_days_since_release} days in theaters)"
+            analysis_text += time_context + "."
+            
             data = {
                 'target_movie': movie_title,
                 'comp_titles': comp_analysis[:6],  # Show up to 6 comp titles
-                'analysis': f"Found {len(comp_analysis)} comparable titles based on genre ({target_movie.genre}), rating ({target_movie.rating}), and performance patterns."
+                'time_period': time_context,
+                'target_release_date': target_release_date.isoformat() if target_release_date else None,
+                'target_days_since_release': target_days_since_release,
+                'analysis': analysis_text
             }
             
             # Generate AI response
@@ -1533,6 +1670,7 @@ This prediction is based on the average performance of similar movies in my data
     def handle_performance_analysis_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
         """Handle performance analysis queries with AI enhancement - using raw Movie data"""
         movie_titles = query_intent.get('movie_titles', [])
+        time_period = query_intent.get('time_period', None)
         
         if not movie_titles:
             return {'error': 'No movie title found in query'}
@@ -1541,7 +1679,15 @@ This prediction is based on the average performance of similar movies in my data
         
         try:
             # Get target movie data from raw Movie table (more accurate)
-            target_movie_data = Movie.objects.filter(title__icontains=movie_title).aggregate(
+            # Apply time period filter if specified
+            movie_filter = Movie.objects.filter(title__icontains=movie_title)
+            if time_period and time_period.get('start_date'):
+                movie_filter = movie_filter.filter(
+                    date_sh__gte=time_period['start_date'],
+                    date_sh__lte=time_period['end_date']
+                )
+            
+            target_movie_data = movie_filter.aggregate(
                 total_reserved=Sum('reserved'),
                 total_sales=Sum(F('reserved') * F('price')),
                 avg_price=Avg('price'),
@@ -1556,15 +1702,38 @@ This prediction is based on the average performance of similar movies in my data
                 target_occupancy = 0
             
             if not target_movie_data['total_reserved'] or target_movie_data['total_reserved'] == 0:
-                return {'error': f'No data found for movie "{movie_title}"'}
+                # Check if movie exists but has no data for the time period
+                has_movie = Movie.objects.filter(title__icontains=movie_title).exists()
+                if has_movie and time_period and time_period.get('start_date'):
+                    # Movie exists but no data for this time period
+                    date_range = Movie.objects.filter(title__icontains=movie_title).aggregate(
+                        min_date=Min('date_sh'),
+                        max_date=Max('date_sh')
+                    )
+                    error_msg = f'No data found for "{movie_title}" in the last {time_period.get("days", "specified")} days.'
+                    if date_range['min_date'] and date_range['max_date']:
+                        error_msg += f' Available data: {date_range["min_date"]} to {date_range["max_date"]}.'
+                    return {'error': error_msg}
+                elif has_movie:
+                    return {'error': f'No performance data available for "{movie_title}"'}
+                else:
+                    return {'error': f'Movie "{movie_title}" not found in database'}
             
             # Get comparable movies from raw data
-            comp_movies_data = Movie.objects.values('title').annotate(
+            # Apply time period filter if specified
+            comp_movies_filter = Movie.objects.exclude(title__icontains=movie_title)
+            if time_period and time_period.get('start_date'):
+                comp_movies_filter = comp_movies_filter.filter(
+                    date_sh__gte=time_period['start_date'],
+                    date_sh__lte=time_period['end_date']
+                )
+            
+            comp_movies_data = comp_movies_filter.values('title').annotate(
                 total_reserved=Sum('reserved'),
                 total_sales=Sum(F('reserved') * F('price')),
                 avg_price=Avg('price'),
                 total_seats=Sum('total_seats')
-            ).exclude(title__icontains=movie_title).order_by('-total_sales')[:5]
+            ).order_by('-total_sales')[:5]
             
             # Calculate occupancy for each comparable movie
             for comp in comp_movies_data:
@@ -1595,6 +1764,13 @@ This prediction is based on the average performance of similar movies in my data
             else:
                 performance_status = "Performing as expected"
             
+            # Build analysis text with time period context
+            time_context = ""
+            if time_period and time_period.get('period'):
+                period_desc = time_period['period'].replace('_', ' ').title()
+                if time_period.get('start_date') and time_period.get('end_date'):
+                    time_context = f" (analyzing {period_desc}: {time_period['start_date']} to {time_period['end_date']})"
+            
             data = {
                 'target_movie': movie_title,
                 'performance_status': performance_status,
@@ -1604,7 +1780,8 @@ This prediction is based on the average performance of similar movies in my data
                 'target_sales': f"${target_sales:,.0f}",
                 'comp_avg_occupancy': f"{comp_avg_occupancy:.1f}%",
                 'comp_avg_sales': f"${comp_avg_sales:,.0f}",
-                'analysis': f"Compared to {len(comp_movies_data)} comparable movies based on sales and occupancy data."
+                'time_period': time_context,
+                'analysis': f"Compared to {len(comp_movies_data)} comparable movies based on sales and occupancy data{time_context}."
             }
             
             # Generate AI response
@@ -3222,9 +3399,60 @@ If you implement these changes, you could potentially increase total revenue by 
                     'query_type': 'amenities_format'
                 }
             
+            # Check for language queries
+            if 'languag' in query_lower or 'lang' in query_lower:
+                # Get all unique language formats from database
+                from django.db.models import Count, Q
+                
+                # Get all unique language formats with their counts
+                languages_data = Movie.objects.exclude(
+                    Q(language_format__isnull=True) | 
+                    Q(language_format='') | 
+                    Q(language_format='undefined')
+                ).values('language_format').annotate(
+                    count=Count('id'),
+                    unique_movies=Count('mm_id', distinct=True)
+                ).order_by('-unique_movies')
+                
+                languages_list = [lang for lang in languages_data]
+                
+                if not languages_list:
+                    return {
+                        'type': 'amenities_format',
+                        'message': "No language format information available in the database.",
+                        'data': {'languages': []},
+                        'sources': None,
+                        'retrieved_count': 0,
+                        'accuracy': '100%',
+                        'query_type': 'amenities_format'
+                    }
+                
+                response = f"**Available Language Formats for Movie Screenings:**\n\n"
+                for lang_info in languages_list:
+                    lang = lang_info['language_format']
+                    count = lang_info['count']
+                    unique_movies = lang_info['unique_movies']
+                    
+                    # Clean up HTML entities
+                    lang_clean = lang.replace('&amp;', '&')
+                    
+                    response += f"• **{lang_clean}**: {unique_movies:,} unique movie(s) ({count:,} total showings)\n"
+                
+                response += f"\n**Total language formats available:** {len(languages_list)}"
+                
+                return {
+                    'type': 'amenities_format',
+                    'message': response,
+                    'data': {'languages': languages_list},
+                    'sources': None,
+                    'retrieved_count': len(languages_list),
+                    'accuracy': '100%',
+                    'query_type': 'amenities_format'
+                }
+            
             return {
                 'type': 'amenities_format',
-                'message': "Please specify what you're looking for. Examples: 'What amenities are available at theater ID 10314?' or 'Count all movies in IMAX format'",
+                'message': "Please specify what you're looking for. Examples: 'What amenities are available at theater ID 10314?' or 'Count all movies in IMAX format' or 'List all language formats available for movie screenings'",
                 'data': None,
                 'sources': None,
                 'retrieved_count': 0,
@@ -4327,11 +4555,23 @@ If you implement these changes, you could potentially increase total revenue by 
                 'query_type': 'movie_information'
             }
     
-    def _calculate_movie_performance_metrics(self, movie_title: str) -> Dict[str, Any]:
-        """Calculate movie performance metrics using the correct formula: Sales = Price * Reserved"""
+    def _calculate_movie_performance_metrics(self, movie_title: str, time_period: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Calculate movie performance metrics using the correct formula: Sales = Price * Reserved
+        
+        Args:
+            movie_title: Title of the movie to analyze
+            time_period: Dict with start_date, end_date, period info for filtering
+        """
         try:
             # Get all records for this movie
             movie_records = Movie.objects.filter(title__icontains=movie_title)
+            
+            # Apply time period filter if specified
+            if time_period and time_period.get('start_date'):
+                movie_records = movie_records.filter(
+                    date_sh__gte=time_period['start_date'],
+                    date_sh__lte=time_period['end_date']
+                )
             
             if not movie_records.exists():
                 return {
@@ -4339,55 +4579,41 @@ If you implement these changes, you could potentially increase total revenue by 
                     'unique_theaters': 0,
                     'avg_price': 0.0,
                     'total_sales': 0.0,
+                    'sales_estimate': 0.0,
                     'occupancy_rate': 0.0,
                     'total_reserved': 0,
                     'total_seats': 0
                 }
             
-            # Calculate metrics
-            total_showings = movie_records.count()
-            unique_theaters = movie_records.values('theater_name').distinct().count()
+            # Calculate metrics using database aggregation for performance (FAST!)
+            # This avoids loading all records into memory and looping through them
+            aggregated_data = movie_records.aggregate(
+                total_showings=Count('id'),
+                unique_theaters=Count('theater_name', distinct=True),
+                total_reserved=Sum('reserved'),
+                total_seats=Sum('total_seats'),
+                # Calculate total sales using database functions (FAST!)
+                total_sales=Sum(F('price') * F('reserved')),
+                avg_price=Avg('price')
+            )
             
-            # Calculate total reserved seats and total seats
-            total_reserved = sum(record.reserved for record in movie_records if record.reserved)
-            total_seats = sum(record.total_seats for record in movie_records if record.total_seats)
+            # Extract calculated values
+            total_showings = aggregated_data['total_showings'] or 0
+            unique_theaters = aggregated_data['unique_theaters'] or 0
+            total_reserved = int(aggregated_data['total_reserved'] or 0)
+            total_seats = int(aggregated_data['total_seats'] or 0)
+            total_sales = float(aggregated_data['total_sales'] or 0)
+            avg_price = float(aggregated_data['avg_price'] or 0)
             
             # Calculate occupancy rate
             occupancy_rate = (total_reserved / total_seats * 100) if total_seats > 0 else 0.0
-            
-            # Calculate sales using the correct formula: Price * Reserved
-            total_sales = 0.0
-            price_sum = 0.0
-            valid_prices = 0
-            
-            for record in movie_records:
-                if record.reserved and record.reserved > 0:
-                    # Convert price string to float (remove $ sign)
-                    try:
-                        price_str = str(record.price).replace('$', '').replace(',', '').strip()
-                        if ',' in price_str:
-                            price_str = price_str.split(',')[0]  # Take first price if multiple
-                        price_float = float(price_str) if price_str else 0.0
-                        
-                        # Calculate sales for this record: Price * Reserved
-                        record_sales = price_float * record.reserved
-                        total_sales += record_sales
-                        
-                        # Track for average price calculation
-                        price_sum += price_float
-                        valid_prices += 1
-                        
-                    except (ValueError, TypeError):
-                        continue
-            
-            # Calculate average price
-            avg_price = (price_sum / valid_prices) if valid_prices > 0 else 0.0
             
             return {
                 'num_showings': total_showings,
                 'unique_theaters': unique_theaters,
                 'avg_price': round(avg_price, 2),
                 'total_sales': round(total_sales, 2),
+                'sales_estimate': round(total_sales, 2),  # Add sales_estimate key
                 'occupancy_rate': round(occupancy_rate, 1),
                 'total_reserved': total_reserved,
                 'total_seats': total_seats
@@ -4400,6 +4626,7 @@ If you implement these changes, you could potentially increase total revenue by 
                 'unique_theaters': 0,
                 'avg_price': 0.0,
                 'total_sales': 0.0,
+                'sales_estimate': 0.0,
                 'occupancy_rate': 0.0,
                 'total_reserved': 0,
                 'total_seats': 0
