@@ -368,7 +368,8 @@ class IntelligentFilmAnalyticsAgent:
                 query_type = 'auditorium_analysis'
             
             # Runtime filter queries
-            elif any(word in query_lower for word in ['runtime longer than', 'movies longer than', 'runtime greater than']) and any(word in query_lower for word in ['minutes', '150', '120', '180']):
+            elif (any(word in query_lower for word in ['runtime longer than', 'movies longer than', 'runtime greater than', 'movies have a runtime longer than', 'which movies have a runtime']) 
+                  and any(word in query_lower for word in ['minutes', 'than', 'longer', 'greater'])):
                 query_type = 'runtime_filter'
             
             # International screenings queries
@@ -379,9 +380,16 @@ class IntelligentFilmAnalyticsAgent:
             elif any(word in query_lower for word in ['count theaters offering imax', 'imax theaters', 'theaters offering imax', 'imax theater count']):
                 query_type = 'imax_theater_count'
             
-            # Movie listing queries
-            elif any(word in query_lower for word in ['list me all movies', 'list all movies', 'all movie titles', 'show all movies', 'movies title']):
+            # Movie listing queries (check BEFORE theater listing to avoid conflicts)
+            elif any(word in query_lower for word in ['list me all movies', 'list all movies', 'all movie titles', 'show all movies', 'movies title', 'list me all the movie titles']):
                 query_type = 'movie_listing'
+            
+            # Theater listing queries (exclude occupancy/queries with movie titles)
+            elif (any(word in query_lower for word in ['list me all unique theaters', 'list all unique theaters', 'all unique theaters', 'show all theaters', 'unique theaters', 'list me the names of all theaters']) 
+                  and 'in ' not in query_lower 
+                  and 'occupancy' not in query_lower 
+                  and not any(word in query_lower for word in ['for ', 'movie', 'dune', 'twisters', 'homestead', 'joker'])):
+                query_type = 'theater_listing'
             
             # Theater update queries
             elif any(word in query_lower for word in ['last update', 'when was the last update', 'theater update']) and re.search(r'\d+', query):
@@ -391,8 +399,9 @@ class IntelligentFilmAnalyticsAgent:
             elif any(word in query_lower for word in ['peak showtime', 'peak hours', 'busiest hours', 'showtime hours', 'reservations by hour']):
                 query_type = 'peak_hours_analysis'
             
-            # Occupancy rate queries
-            elif any(word in query_lower for word in ['average seat occupancy', 'occupancy rate', 'seat occupancy', 'occupancy across']) and any(word in query_lower for word in ['theaters', 'all theaters', 'across']):
+            # Occupancy rate queries (check BEFORE seating analysis to catch movie-specific ones)
+            elif (any(word in query_lower for word in ['average seat occupancy', 'occupancy rate', 'seat occupancy', 'occupancy across', 'occupancy of']) 
+                  and any(word in query_lower for word in ['for', 'theaters', 'all theaters', 'across', 'dune', 'twisters', 'homestead', 'joker', 'monkey man', 'movie'])):
                 query_type = 'occupancy_rate_analysis'
             
             # Generic movie performance queries (catch-all for movie-specific analytics)
@@ -451,9 +460,10 @@ class IntelligentFilmAnalyticsAgent:
                 query_type = 'basic_database'
             
             # Seating Analysis (check this BEFORE performance analysis)
-            elif any(word in query_lower for word in ['seating availability', 'seat occupancy', 'occupancy rate', 'seating capacity', 'seating availability compare', 'occupancy compare']):
+            # NOTE: Exclude 'occupancy rate' and 'seat occupancy' as these are handled by occupancy_rate_analysis
+            elif any(word in query_lower for word in ['seating availability', 'seating capacity', 'seating availability compare']):
                 query_type = 'seating_analysis'
-            elif any(word in query_lower for word in ['highest average seat occupancy', 'theaters with highest occupancy']):
+            elif any(word in query_lower for word in ['highest average occupancy', 'theaters with highest occupancy']) and 'for' not in query_lower:
                 query_type = 'seating_analysis'
             
             # Price Analysis (check this BEFORE sales prediction)
@@ -3674,12 +3684,12 @@ If you implement these changes, you could potentially increase total revenue by 
             from django.db.models import Sum
             from django.db import connection
             
-            # Use raw SQL to extract hour from date_sh and group by hour
+            # Use raw SQL to extract hour from time_sh and group by hour
             with connection.cursor() as cursor:
                 cursor.execute("""
                     SELECT EXTRACT(HOUR FROM time_sh) AS hour, 
                            SUM(reserved) AS total_reserved 
-                    FROM movies_movie 
+                    FROM movies 
                     WHERE time_sh IS NOT NULL AND reserved IS NOT NULL
                     GROUP BY hour 
                     ORDER BY total_reserved DESC
@@ -3759,7 +3769,7 @@ If you implement these changes, you could potentially increase total revenue by 
                 with connection.cursor() as cursor:
                     cursor.execute("""
                         SELECT AVG((reserved * 100.0) / actual_total_seats) AS occupancy_rate 
-                        FROM movies_movie 
+                        FROM movies 
                         WHERE actual_total_seats > 0 
                         AND title ILIKE %s
                     """, [f'%{movie_title}%'])

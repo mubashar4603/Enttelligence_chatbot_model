@@ -1,0 +1,259 @@
+{
+  "timestamp": "2025-10-26T13:17:57.971994",
+  "total_tests": 25,
+  "passed": 19,
+  "failed": 6,
+  "success_rate": 76.0,
+  "results": [
+    {
+      "query_num": 1,
+      "query": "list me all the movie titles",
+      "description": "Movie listing query",
+      "success": true,
+      "query_type": "movie_listing",
+      "expected_type": "movie_listing",
+      "accuracy": "100%",
+      "response_preview": "**All Movie Titles:**\n\n1. Dune: Part Two\n2. Homestead\n3. Joker: Folie a Deux\n4. Joker: Folie \u00c0 Deux\n5. Monkey Man\n6. Twisters\n\n**Total movies: 6**"
+    },
+    {
+      "query_num": 2,
+      "query": "list me all the unique theaters",
+      "description": "Theater listing query",
+      "success": true,
+      "query_type": "theater_listing",
+      "expected_type": "theater_listing",
+      "accuracy": "100%",
+      "response_preview": "**All Unique Theaters:**\n\n1. **13-24 Drive-In**\n   \u2022 Theater ID: 5153\n   \u2022 Location: Wabash, IN\n   \u2022 Circuit: Independent Theaters\n\n2. **24:1 Cinema**\n   \u2022 Theater ID: 42566\n   \u2022 Location: Pagedale, MO\n   \u2022 Circuit: Independent Theaters\n\n3. **2nd Street Cinema**\n   \u2022 Theater ID: 111690\n   \u2022 Location..."
+    },
+    {
+      "query_num": 3,
+      "query": "what are the best comp titles for Dune: Part Two",
+      "description": "Comp titles query",
+      "success": true,
+      "query_type": "comp_titles",
+      "expected_type": "comp_titles",
+      "accuracy": "100%",
+      "response_preview": "Based on the provided comparable titles, I can analyze and recommend some comp titles for Dune: Part Two.\n\nSince Dune: Part Two's genre is not specified in the available data, I will consider all possible genres (Action) to find suitable comparisons.\n\nThe top-performing title based on sales is Twist..."
+    },
+    {
+      "query_num": 4,
+      "query": "estimated sales for Homestead",
+      "description": "Sales prediction query",
+      "success": true,
+      "query_type": "sales_prediction",
+      "expected_type": "sales_prediction",
+      "accuracy": "85%",
+      "response_preview": "Based on comparable movies in the Action genre with PG-13 rating, here's my sales prediction for Homestead:\n\n**Comparable Movies Used:**\nDune: Part Two, Joker: Folie a Deux, Dune: Part Two, Twisters, Joker: Folie \u00c0 Deux\n\n**Predicted Performance:**\n\u2022 Estimated Total Revenue: $116,962.81\n\u2022 Expected Av..."
+    },
+    {
+      "query_num": 5,
+      "query": "how is Joker: Folie a Deux performing",
+      "description": "Performance analysis query",
+      "success": true,
+      "query_type": "performance_analysis",
+      "expected_type": "performance_analysis",
+      "accuracy": "100%",
+      "response_preview": "Based on the available data, I can provide some insights.\n\nAccording to the performance status, Joker: Folie a Deux is currently underperforming. This means that its actual performance has fallen short of expectations.\n\nAdditionally, the overperformance percentage is -47.6%. This indicates that the ..."
+    },
+    {
+      "query_num": 6,
+      "query": "what is the average seat occupancy rate across all theaters for Joker: Folie \u00c0 Deux Movie",
+      "description": "Occupancy rate analysis",
+      "success": false,
+      "query_type": "theater_listing",
+      "expected_type": "occupancy_rate_analysis",
+      "accuracy": "100%",
+      "response_preview": "**All Unique Theaters:**\n\n1. **13-24 Drive-In**\n   \u2022 Theater ID: 5153\n   \u2022 Location: Wabash, IN\n   \u2022 Circuit: Independent Theaters\n\n2. **24:1 Cinema**\n   \u2022 Theater ID: 42566\n   \u2022 Location: Pagedale, MO\n   \u2022 Circuit: Independent Theaters\n\n3. **2nd Street Cinema**\n   \u2022 Theater ID: 111690\n   \u2022 Location..."
+    },
+    {
+      "query_num": 7,
+      "query": "identify peak showtime hours based on reservations",
+      "description": "Peak hours analysis",
+      "success": true,
+      "query_type": "peak_hours_analysis",
+      "expected_type": "peak_hours_analysis",
+      "accuracy": "100%",
+      "response_preview": "**Peak Showtime Hours Based on Reservations:**\n\n\u2022 **19:00**: 5,274,557 reservations\n\u2022 **18:00**: 4,310,413 reservations\n\u2022 **15:00**: 2,552,810 reservations\n\u2022 **16:00**: 2,317,091 reservations\n\u2022 **20:00**: 2,076,988 reservations\n\u2022 **21:00**: 2,046,626 reservations\n\u2022 **13:00**: 1,914,521 reservations\n..."
+    },
+    {
+      "query_num": 8,
+      "query": "when was the last update for theater 10000",
+      "description": "Theater update query",
+      "success": false,
+      "query_type": "movie_information",
+      "expected_type": "theater_update",
+      "accuracy": "100%",
+      "response_preview": "I'd be happy to provide movie information! Please specify which movie you'd like to know about. For example: 'Tell me about The Matrix' or 'What is the plot of Inception?'"
+    },
+    {
+      "query_num": 9,
+      "query": "what movies are showing in theaters for 2025-09-26",
+      "description": "Date-based movie listing",
+      "success": true,
+      "query_type": "date_movies",
+      "expected_type": "date_movies",
+      "accuracy": "100%",
+      "response_preview": "**Movies showing on 2025-09-26:**\n\n1. Twisters\n2. Twisters\n\n**Total movies showing: 2**"
+    },
+    {
+      "query_num": 10,
+      "query": "which movies have a runtime longer than 150 minutes",
+      "description": "Runtime filter query",
+      "success": false,
+      "query_type": "movie_information",
+      "expected_type": "runtime_filter",
+      "accuracy": "100%",
+      "response_preview": "I'd be happy to provide movie information! Please specify which movie you'd like to know about. For example: 'Tell me about The Matrix' or 'What is the plot of Inception?'"
+    },
+    {
+      "query_num": 11,
+      "query": "list all international non-US movie screenings",
+      "description": "International screenings",
+      "success": true,
+      "query_type": "international_screenings",
+      "expected_type": "international_screenings",
+      "accuracy": "100%",
+      "response_preview": "**International (Non-US) Movie Screenings:**\n\n**Canada:**\n\u2022 Twisters\n\u2022 Joker: Folie a Deux\n\u2022 Homestead\n\u2022 Dune: Part Two\n\u2022 Monkey Man\n\n**Total countries: 1**\n**Total unique movies: 5**"
+    },
+    {
+      "query_num": 12,
+      "query": "count theaters offering IMAX",
+      "description": "IMAX theater count",
+      "success": true,
+      "query_type": "imax_theater_count",
+      "expected_type": "imax_theater_count",
+      "accuracy": "100%",
+      "response_preview": "**Theaters Offering IMAX:**\n\n\u2022 **Total IMAX Theaters**: 405\n\n**IMAX Theater IDs:**\n1. Theater ID: 10006\n2. Theater ID: 10009\n3. Theater ID: 10015\n4. Theater ID: 10023\n5. Theater ID: 10032\n6. Theater ID: 10035\n7. Theater ID: 10060\n8. Theater ID: 10073\n9. Theater ID: 10079\n10. Theater ID: 10118\n... an..."
+    },
+    {
+      "query_num": 13,
+      "query": "what is the average number of auditoriums per theater",
+      "description": "Auditorium analysis",
+      "success": true,
+      "query_type": "auditorium_analysis",
+      "expected_type": "auditorium_analysis",
+      "accuracy": "100%",
+      "response_preview": "**Average Number of Auditoriums per Theater:**\n\n\u2022 **Average Auditoriums**: 7.1373\n\u2022 **Total Theaters**: 3,140\n\u2022 **Total Auditoriums**: 22,411\n"
+    },
+    {
+      "query_num": 14,
+      "query": "which studios have movies releasing on 2025-09-26",
+      "description": "Studio release query",
+      "success": false,
+      "query_type": "studio_genre",
+      "expected_type": "studio_genre",
+      "accuracy": "100%",
+      "response_preview": "**Studios releasing movies on 2025-09-26:**\n\n"
+    },
+    {
+      "query_num": 15,
+      "query": "which circuit has more theaters: ACX Cinemas or AMC Entertainment Inc",
+      "description": "Circuit comparison",
+      "success": true,
+      "query_type": "circuit_comparison",
+      "expected_type": "circuit_comparison",
+      "accuracy": "100%",
+      "response_preview": "**Circuit Theater Comparison:**\n\n\u2022 **AMC Entertainment Inc**: 559 theaters\n\u2022 **Regal Entertainment Group**: 436 theaters\n\n**Winner**: AMC Entertainment Inc with 559 theaters (123 more than the competitor)"
+    },
+    {
+      "query_num": 16,
+      "query": "list all theaters in Abbotsford",
+      "description": "Theater location query",
+      "success": false,
+      "query_type": "general",
+      "expected_type": "theater_location",
+      "accuracy": "100%",
+      "response_preview": "I'm Entelligence AI Assistant, your film analytics expert. I can help with comp titles, sales predictions, performance analysis, market opportunities, and basic database queries about movies and theaters. Could you please be more specific about what you'd like to know?"
+    },
+    {
+      "query_num": 17,
+      "query": "what amenities are available at theater ID 10004",
+      "description": "Amenities query",
+      "success": true,
+      "query_type": "amenities_format",
+      "expected_type": "amenities_format",
+      "accuracy": "100%",
+      "response_preview": "**Amenities available at theater ID 10004:**\n\n\u2022 Luxury Lounger | Closed Caption | Descriptive Narration |\n\u2022 Luxury Lounger |  |  |  |\n\u2022 Luxury Lounger | Assisted Listening Device | Standard\n\u2022 Luxury Lounger | Closed Caption | Assisted Listening Device | Descriptive Narration | Standa\n\u2022 Luxury Lounge..."
+    },
+    {
+      "query_num": 18,
+      "query": "show me all movies with ticket prices under $15",
+      "description": "Pricing query",
+      "success": true,
+      "query_type": "pricing_seats",
+      "expected_type": "pricing_seats",
+      "accuracy": "100%",
+      "response_preview": "**Movies with ticket prices under $15.0:**\n\n1. Dune: Part Two\n2. Homestead\n3. Joker: Folie a Deux\n4. Joker: Folie \u00c0 Deux\n5. Monkey Man\n6. Twisters\n\n**Total movies: 6**"
+    },
+    {
+      "query_num": 19,
+      "query": "what is the performance of Monkey Man",
+      "description": "Generic movie performance",
+      "success": false,
+      "query_type": "performance_analysis",
+      "expected_type": "movie_performance",
+      "accuracy": "100%",
+      "response_preview": "Based on the available data, I can analyze the performance of Monkey Man.\n\nAccording to the data, Monkey Man is currently underperforming. Additionally, it has an overperformance of -24.0%. This means that its actual performance is 24.0% lower than expected.\n\nThat's all the information I can provide..."
+    },
+    {
+      "query_num": 20,
+      "query": "what are the most popular showtimes",
+      "description": "Showtime analysis",
+      "success": true,
+      "query_type": "showtime_analysis",
+      "expected_type": "showtime_analysis",
+      "accuracy": "100%",
+      "response_preview": "I don't have showtime data for 'are the most popular showtimes'. Please check the theater name or try asking about a different theater."
+    },
+    {
+      "query_num": 21,
+      "query": "show me seating availability",
+      "description": "Seating analysis",
+      "success": true,
+      "query_type": "seating_analysis",
+      "expected_type": "seating_analysis",
+      "accuracy": "95%",
+      "response_preview": "**Overall Seating Analysis:**\n\n**Capacity Metrics:**\n\u2022 Average Theater Capacity: 32 seats per auditorium\n\u2022 Total System Capacity: 236,038,783 seats\n\u2022 Average Occupancy Rate: 12.2%\n\n**Current Status:**\n\u2022 Total Reserved Seats: 28,739,565\n\u2022 Total Available Seats: 204,607,005\n\u2022 Utilization Rate: 12.2%\n\n..."
+    },
+    {
+      "query_num": 22,
+      "query": "what is the price difference between weekend and weekday shows",
+      "description": "Price analysis",
+      "success": true,
+      "query_type": "price_analysis",
+      "expected_type": "price_analysis",
+      "accuracy": "95%",
+      "response_preview": "**Weekend vs Weekday Ticket Price Analysis:**\n\n**Weekend Pricing (Fri-Sun):**\n\u2022 Average Adult Price: $12.65\n\u2022 Average Child Price: $10.55\n\u2022 Average Senior Price: $11.13\n\u2022 Total Shows: 4,466,353\n\n**Weekday Pricing (Mon-Thu):**\n\u2022 Average Adult Price: $11.65\n\u2022 Average Child Price: $9.81\n\u2022 Average Senio..."
+    },
+    {
+      "query_num": 23,
+      "query": "compare theaters 10006 and 10008",
+      "description": "Theater comparison",
+      "success": true,
+      "query_type": "theater_comparison",
+      "expected_type": "theater_comparison",
+      "accuracy": "100%",
+      "response_preview": "I'd be happy to compare theaters! Please specify which theaters you'd like to compare. For example: 'Compare AMC Empire 25 and Regal Union Square' or 'Compare AMC vs Regal theaters'."
+    },
+    {
+      "query_num": 24,
+      "query": "tell me about Twisters",
+      "description": "Movie information",
+      "success": true,
+      "query_type": "movie_information",
+      "expected_type": "movie_information",
+      "accuracy": "95%",
+      "response_preview": "**Complete Movie Information: Twisters**\n\n**Basic Details:**\n\u2022 **Genre**: Action\n\u2022 **Rating**: PG-13\n\u2022 **Runtime**: 117 minutes (1h 57m)\n\u2022 **Studio**: Universal Pictures\n\u2022 **Release Date**: July 19, 2024\n\n**Box Office Performance:**\n\u2022 **Total Showings**: 2,738,201\n\u2022 **Theater Count**: 2,945\n\u2022 **Aver..."
+    },
+    {
+      "query_num": 25,
+      "query": "what are the advantages of watching in IMAX",
+      "description": "Format analysis",
+      "success": true,
+      "query_type": "format_analysis",
+      "expected_type": "format_analysis",
+      "accuracy": "95%",
+      "response_preview": "**IMAX Format Performance Analysis**\n\n**Top 10 IMAX Movies by Revenue:**\n\u2022 Dune: Part Two: 207,619 shows, $18.89 avg price, 30.8% occupancy, $42,497,032.76 revenue\n\u2022 Twisters: 69,114 shows, $18.77 avg price, 16.0% occupancy, $10,885,073.77 revenue\n\u2022 Joker: Folie a Deux: 86,570 shows, $19.75 avg pric..."
+    }
+  ]
+}
