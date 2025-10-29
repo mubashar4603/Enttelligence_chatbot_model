@@ -138,18 +138,32 @@ class Command(BaseCommand):
                     comparative_count = ComparativeAnalysis.objects.count()
                     
                     # Use raw SQL to ensure complete clearing
+                    # Note: Django table names are lowercase with underscores (not app prefix)
                     with connection.cursor() as cursor:
-                        cursor.execute("DELETE FROM movies_filmperformancesummary")
-                        cursor.execute("DELETE FROM movies_theaterperformance") 
-                        cursor.execute("DELETE FROM movies_marketanalysis")
-                        cursor.execute("DELETE FROM movies_comparativeanalysis")
+                        cursor.execute("DELETE FROM film_performance_summary")
+                        cursor.execute("DELETE FROM theater_performance") 
+                        cursor.execute("DELETE FROM market_analysis")
+                        cursor.execute("DELETE FROM comparative_analysis")
                     
                     # Reset auto-increment sequences
+                    # Note: UUID fields don't use sequences, but try anyway (will fail silently)
                     with connection.cursor() as cursor:
-                        cursor.execute("ALTER SEQUENCE movies_filmperformancesummary_id_seq RESTART WITH 1")
-                        cursor.execute("ALTER SEQUENCE movies_theaterperformance_id_seq RESTART WITH 1")
-                        cursor.execute("ALTER SEQUENCE movies_marketanalysis_id_seq RESTART WITH 1")
-                        cursor.execute("ALTER SEQUENCE movies_comparativeanalysis_id_seq RESTART WITH 1")
+                        try:
+                            cursor.execute("ALTER SEQUENCE film_performance_summary_id_seq RESTART WITH 1")
+                        except:
+                            pass  # UUID fields don't use sequences
+                        try:
+                            cursor.execute("ALTER SEQUENCE theater_performance_id_seq RESTART WITH 1")
+                        except:
+                            pass
+                        try:
+                            cursor.execute("ALTER SEQUENCE market_analysis_id_seq RESTART WITH 1")
+                        except:
+                            pass
+                        try:
+                            cursor.execute("ALTER SEQUENCE comparative_analysis_id_seq RESTART WITH 1")
+                        except:
+                            pass
                     
                     self.stdout.write(f'✅ Cleared {film_count:,} FilmPerformanceSummary, {theater_count:,} TheaterPerformance, {market_count:,} MarketAnalysis, {comparative_count:,} ComparativeAnalysis records')
                     self.stdout.write('✅ Database cleared and sequences reset')
@@ -163,18 +177,52 @@ class Command(BaseCommand):
                     ComparativeAnalysis.objects.all().delete()
                     self.stdout.write('✅ Database cleared (fallback method)')
             
+            # Auto-clear analytics tables when doing analytics-only import (fresh start)
+            if options['analytics_tables'] and options.get('skip_movies', False):
+                self.stdout.write('🗑️ Clearing analytics tables for fresh import...')
+                try:
+                    film_count = FilmPerformanceSummary.objects.count()
+                    theater_count = TheaterPerformance.objects.count()
+                    market_count = MarketAnalysis.objects.count()
+                    comparative_count = ComparativeAnalysis.objects.count()
+                    
+                    # Use TRUNCATE for fast clearing
+                    # Note: Django table names are lowercase with underscores (not app prefix)
+                    with connection.cursor() as cursor:
+                        cursor.execute("TRUNCATE TABLE film_performance_summary RESTART IDENTITY CASCADE;")
+                        cursor.execute("TRUNCATE TABLE theater_performance RESTART IDENTITY CASCADE;")
+                        cursor.execute("TRUNCATE TABLE market_analysis RESTART IDENTITY CASCADE;")
+                        cursor.execute("TRUNCATE TABLE comparative_analysis RESTART IDENTITY CASCADE;")
+                    
+                    self.stdout.write(f'✅ Cleared {film_count:,} FilmPerformanceSummary, {theater_count:,} TheaterPerformance, {market_count:,} MarketAnalysis, {comparative_count:,} ComparativeAnalysis records')
+                    self.stdout.write('✅ Analytics tables cleared and ready for fresh import')
+                except Exception as e:
+                    self.stdout.write(f'⚠️ Error clearing analytics tables: {e}')
+                    # Fallback to Django ORM
+                    FilmPerformanceSummary.objects.all().delete()
+                    TheaterPerformance.objects.all().delete()
+                    MarketAnalysis.objects.all().delete()
+                    ComparativeAnalysis.objects.all().delete()
+                    self.stdout.write('✅ Analytics tables cleared (fallback method)')
+            
             # Get total row count
             total_rows = self.get_total_rows(csv_path)
             self.stdout.write(f'📈 Total rows in CSV: {total_rows:,}')
             
             # Handle checkpoint clearing
-            if options['clear_checkpoints']:
+            # Auto-clear checkpoints when doing analytics-only import (fresh start)
+            if options['clear_checkpoints'] or (options['analytics_tables'] and options.get('skip_movies', False)):
                 self.clear_checkpoints()
                 start_chunk = 1
                 total_processed = 0
-                self.stdout.write(
-                    self.style.SUCCESS('🚀 Starting from scratch (checkpoints cleared)')
-                )
+                if options['clear_checkpoints']:
+                    self.stdout.write(
+                        self.style.SUCCESS('🚀 Starting from scratch (checkpoints cleared)')
+                    )
+                else:
+                    self.stdout.write(
+                        self.style.SUCCESS('🗑️ Cleared checkpoints for fresh analytics import')
+                    )
             else:
                 # Check for existing checkpoint
                 checkpoint_data = self.load_checkpoint()

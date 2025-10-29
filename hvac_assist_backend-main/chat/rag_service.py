@@ -72,7 +72,10 @@ from langchain_ollama import OllamaLLM
 from langchain.prompts import PromptTemplate
 from langchain.callbacks.base import BaseCallbackHandler
 import logging
+import re
+from typing import Dict, List, Any, Optional
 from django.conf import settings
+from movies.performance_service import MoviePerformanceService
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +182,9 @@ class MovieRAGService:
         self.pinecone_index = None
         self.llm = None
         self.streaming_handler = StreamingCallbackHandler()
+        
+        # NEW: Performance analytics service
+        self.performance_service = MoviePerformanceService()
 
         try:
             # Load all components
@@ -399,11 +405,772 @@ class MovieRAGService:
 
         return "\n".join(context_parts)
 
+    def _extract_movie_title(self, query_lower: str, context_keywords: List[str] = None) -> Optional[str]:
+        """
+        Extract movie title from query by matching against database titles.
+        Much more accurate than regex patterns.
+        """
+        from movies.models import Movie
+        
+        # Get all unique movie titles from database
+        available_titles = Movie.objects.values_list('title', flat=True).distinct()
+        
+        # Create a search pattern - look for title mentions in query
+        query_words = query_lower.split()
+        
+        # Try to find movie titles (handle multi-word titles)
+        best_match = None
+        best_match_length = 0
+        
+        for title in available_titles:
+            title_lower = title.lower()
+            title_words = title_lower.split()
+            
+            # Check if all words of title appear in query
+            if all(word in query_lower for word in title_words):
+                # Prefer longer matches (more specific)
+                if len(title_words) > best_match_length:
+                    best_match = title
+                    best_match_length = len(title_words)
+        
+        return best_match
+    
+    def detect_performance_query(self, query: str) -> Optional[Dict[str, Any]]:
+        """
+        Detect if query is asking about movie performance analytics.
+        Uses database-backed movie title matching for accuracy.
+        Returns dict with query type and parameters if detected, None otherwise.
+        """
+        query_lower = query.lower()
+        
+        # Store original query for later use in response formatting
+        detection_base = {'original_query': query}
+        
+        # Pattern 0: Best comp titles (check FIRST before other patterns)
+        # "What are the best comp titles?"
+        # "Show me best performing movies"
+        if re.search(r'(?:what|which|show).*?(?:best|top|highest).*?(?:comp\s+titles?|performing.*?movies?)', query_lower):
+            detection_base['type'] = 'best_comp_titles'
+            return detection_base
+        
+        # Pattern 1: Compare all movies first weekend
+        # "Compare the first weekend revenue performance for all movies"
+        # "Compare first weekend for all movies"
+        if re.search(r'compare.*?(?:first\s+weekend|all\s+movies.*?first\s+weekend)', query_lower):
+            return {'type': 'compare_all_movies_first_weekend'}
+        
+        # Pattern 2: Movies with DBR less than 7 days (releasing within a week)
+        # "Show all movies with DBR less than 7 days"
+        # "Movies releasing within a week"
+        # DBR range should be -7 to 0 (7 days before to release day)
+        if re.search(r'(?:show|list|all).*?movies?.*?(?:with|having|dbr|releasing).*?(?:less|within|before).*?(?:7|seven|week)', query_lower):
+            return {'type': 'movies_dbr_range', 'dbr_min': -7, 'dbr_max': 0}
+        
+        # Pattern 3: Current first weekend movies (DIR -1 to DIR 3)
+        # "Which movies are currently in their first weekend?"
+        if re.search(r'(?:which|what).*?movies?.*?(?:currently|now).*?(?:in|during).*?(?:first\s+weekend|dir.*?-1.*?3)', query_lower):
+            return {'type': 'current_first_weekend_movies'}
+        
+        # Pattern 4: DIR range comparison
+        # "Compare sales between DIR 1-7 vs DIR 8-14 for [movie]"
+        dir_range_match = re.search(r'compare.*?(?:sales|revenue|performance).*?(?:dir|day).*?(\d+)[-\s]+(\d+).*?(?:vs|versus).*?(?:dir|day).*?(\d+)[-\s]+(\d+)', query_lower)
+        if dir_range_match:
+            movie_title = self._extract_movie_title(query_lower)
+            if movie_title:
+                return {
+                    'type': 'dir_range_comparison',
+                    'movie_title': movie_title,
+                    'dir_range1': (int(dir_range_match.group(1)), int(dir_range_match.group(2))),
+                    'dir_range2': (int(dir_range_match.group(3)), int(dir_range_match.group(4)))
+                }
+        
+        # Pattern 5: Total impressions and revenue for first weekend
+        # "What is the total impressions and revenue for [movie] in their first weekend?"
+        if re.search(r'(?:total|what.*?total).*?(?:impressions?|revenue).*?(?:first\s+weekend|dir.*?-1.*?3)', query_lower):
+            movie_title = self._extract_movie_title(query_lower)
+            if movie_title:
+                return {
+                    'type': 'performance_period',
+                    'movie_title': movie_title,
+                    'period': 'first_weekend',
+                    'include_impressions': True
+                }
+        
+        # Pattern 6: Advance bookings / reservations
+        # "What is the total number of advance reservations for movie [movie]?"
+        # Note: "total" advance reservations means ALL advance bookings (DBR < 0), not just DBR <= -7
+        if re.search(r'(?:total|what.*?total).*?(?:number|count).*?(?:advance|advance booking).*?(?:reservation|booking)', query_lower):
+            movie_title = self._extract_movie_title(query_lower)
+            if movie_title:
+                # Check if specific DBR threshold is mentioned
+                dbr_match = re.search(r'dbr.*?(-?\d+)|(-?\d+).*?days?.*?before', query_lower)
+                if dbr_match:
+                    dbr_threshold = int(dbr_match.group(1) or dbr_match.group(2))
+                    return {
+                        'type': 'advance_bookings',
+                        'movie_title': movie_title,
+                        'dbr_threshold': dbr_threshold
+                    }
+                else:
+                    # "Total" means all advance bookings (DBR < 0)
+                    return {
+                        'type': 'advance_bookings',
+                        'movie_title': movie_title,
+                        'dbr_threshold': 0  # DBR < 0 means all advance bookings
+                    }
+        
+        # Pattern 7: Highest advance booking rate
+        # "Which movie has the highest advance booking rate at till DBR -7?"
+        if re.search(r'(?:which|what).*?movie.*?(?:highest|best|most).*?(?:advance|booking).*?(?:rate|dbr|db.*?-7)', query_lower):
+            return {'type': 'highest_advance_booking', 'dbr_threshold': -7}
+        
+        # Pattern 8: Cumulative advance booking sales
+        # "What are the cumulative advance booking sales estimates for [movie] from DBR -50 to DBR -4"
+        cumulative_match = re.search(r'cumulative.*?(?:advance|booking).*?(?:sales|revenue|estimate).*?(?:from|dbr).*?(-?\d+).*?(?:to|dbr).*?(-?\d+)', query_lower)
+        if cumulative_match:
+            movie_title = self._extract_movie_title(query_lower)
+            if movie_title:
+                return {
+                    'type': 'cumulative_advance_booking',
+                    'movie_title': movie_title,
+                    'dbr_start': int(cumulative_match.group(1)),
+                    'dbr_end': int(cumulative_match.group(2))
+                }
+        
+        # Pattern 9: First weekend performance for specific movie
+        # "How is [movie] performing in its first weekend?"
+        # "First weekend performance for [movie]"
+        if re.search(r'(?:first\s+weekend|opening\s+weekend|how.*?performing)', query_lower):
+            movie_title = self._extract_movie_title(query_lower)
+            if movie_title:
+                return {
+                    'type': 'performance_period',
+                    'movie_title': movie_title,
+                    'period': 'first_weekend'
+                }
+        
+        # Pattern 2: Day-by-day trend
+        # "Show me day-by-day sales trend for [movie]"
+        # "Day-by-day performance for [movie]"
+        trend_pattern = r'(?:day-by-day|day by day|daily).*?(?:trend|performance|sales|revenue).*?(?:for|of)?\s*(\w+(?:\s+\w+)*)'
+        match = re.search(trend_pattern, query_lower)
+        if match:
+            movie_title = match.group(1).strip()
+            movie_words = [w for w in movie_title.split() if w not in stopwords]
+            if movie_words:
+                return {
+                    'type': 'day_by_day_trend',
+                    'movie_title': ' '.join(movie_words)
+                }
+        
+        # Pattern 3: Compare movies
+        # "Compare the first 5 days of [movie1] and [movie2]"
+        # "Compare [movie1] vs [movie2] first weekend"
+        compare_pattern = r'compare.*?(?:the|first|opening)?.*?(?:(?:\d+)\s+days?|weekend|week)?.*?(\w+(?:\s+\w+)*).*?(?:and|vs|versus).*?(\w+(?:\s+\w+)*)'
+        match = re.search(compare_pattern, query_lower)
+        if match:
+            movie1 = match.group(1).strip()
+            movie2 = match.group(2).strip()
+            movie1_words = [w for w in movie1.split() if w not in stopwords]
+            movie2_words = [w for w in movie2.split() if w not in stopwords]
+            
+            # Extract period if mentioned
+            period = 'first_weekend'
+            if re.search(r'first\s+(?:5|five)\s+days?', query_lower):
+                period = 'first_5_days'
+            elif re.search(r'first\s+(?:7|seven|week)', query_lower):
+                period = 'first_week'
+            
+            if movie1_words and movie2_words:
+                return {
+                    'type': 'compare_movies',
+                    'movie1': ' '.join(movie1_words),
+                    'movie2': ' '.join(movie2_words),
+                    'period': period
+                }
+        
+        # Pattern 4: Current first weekend movies
+        # "Which movies are currently in their first weekend?"
+        # "Movies in first weekend"
+        if re.search(r'(?:which|what).*?movies?.*?(?:currently|now).*?(?:in|during).*?first\s+weekend', query_lower):
+            return {'type': 'current_first_weekend_movies'}
+        
+        # Pattern 5: Advance bookings
+        # "Total advance reservations for [movie]"
+        advance_pattern = r'(?:advance|advance booking|presale).*?(?:reservation|booking).*?(?:for|of)?\s*(\w+(?:\s+\w+)*)'
+        match = re.search(advance_pattern, query_lower)
+        if match:
+            movie_title = match.group(1).strip()
+            movie_words = [w for w in movie_title.split() if w not in stopwords]
+            if movie_words:
+                return {
+                    'type': 'advance_bookings',
+                    'movie_title': ' '.join(movie_words)
+                }
+        
+        # Pattern 6: Performance with specific period
+        # "How did [movie] perform in its first week?"
+        period_performance_pattern = r'(?:how|what).*?(?:did|is|was).*?(\w+(?:\s+\w+)*).*?(?:perform|revenue|sales).*?(?:in|during).*?(?:first\s+(?:weekend|week|(?:\d+)\s+days?))'
+        match = re.search(period_performance_pattern, query_lower)
+        if match:
+            movie_title = match.group(1).strip()
+            movie_words = [w for w in movie_title.split() if w not in stopwords]
+            
+            period = 'first_weekend'
+            if re.search(r'first\s+(?:5|five)\s+days?', query_lower):
+                period = 'first_5_days'
+            elif re.search(r'first\s+(?:7|seven)\s+week', query_lower):
+                period = 'first_week'
+            
+            if movie_words:
+                return {
+                    'type': 'performance_period',
+                    'movie_title': ' '.join(movie_words),
+                    'period': period
+                }
+        
+        return None
+    
+    def handle_performance_query(self, detection: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Handle performance analytics queries using MoviePerformanceService.
+        """
+        query_type = detection['type']
+        
+        try:
+            if query_type == 'performance_period':
+                movie_title = detection['movie_title']
+                period = detection.get('period', 'first_weekend')
+                
+                logger.info(f"📊 Getting {period} performance for: {movie_title}")
+                perf_data = self.performance_service.get_movie_performance_by_period(
+                    movie_title, period, use_cache=True
+                )
+                
+                if 'error' in perf_data:
+                    return {
+                        'answer': f"I couldn't find performance data for '{movie_title}'. Please check the movie title and try again.",
+                        'data': None
+                    }
+                
+                # Format response
+                revenue = perf_data['total_revenue']
+                reserved = perf_data['total_reserved_seats']
+                
+                answer = (
+                    f"**{movie_title} - {period.replace('_', ' ').title()} Performance:**\n\n"
+                    f"• **Total Revenue**: ${revenue:,.2f}\n"
+                    f"• **Total Reserved Seats**: {reserved:,}\n"
+                    f"• **Total Impressions**: {perf_data['total_impressions']:,}\n"
+                    f"• **Average Price**: ${perf_data['avg_price']:,.2f}\n"
+                    f"• **Average Occupancy Rate**: {perf_data['avg_occupancy_rate']:.1f}%\n\n"
+                    f"Performance period: DIR {perf_data['dir_range'][0]} to DIR {perf_data['dir_range'][1]}"
+                )
+                
+                return {
+                    'answer': answer,
+                    'data': perf_data,
+                    'query_type': 'performance_analytics'
+                }
+            
+            elif query_type == 'day_by_day_trend':
+                movie_title = detection['movie_title']
+                
+                logger.info(f"📈 Getting day-by-day trend for: {movie_title}")
+                trend_data = self.performance_service.get_day_by_day_trend(
+                    movie_title, start_dir=-1, end_dir=14, use_cache=True
+                )
+                
+                if not trend_data:
+                    return {
+                        'answer': f"I couldn't find day-by-day performance data for '{movie_title}'. Please check the movie title.",
+                        'data': None
+                    }
+                
+                # Format response
+                answer_parts = [f"**{movie_title} - Day-by-Day Performance Trend:**\n"]
+                
+                for day in trend_data[:10]:  # Show first 10 days
+                    dir_val = day['dir_value']
+                    revenue = day['total_revenue']
+                    reserved = day['total_reserved_seats']
+                    dod_change = day.get('dod_revenue_change')
+                    
+                    dod_str = ""
+                    if dod_change is not None:
+                        sign = "+" if dod_change >= 0 else ""
+                        dod_str = f" (DoD: {sign}{dod_change:.1f}%)"
+                    
+                    answer_parts.append(
+                        f"• **DIR {dir_val}** ({day['date_sh']}): "
+                        f"${revenue:,.2f} revenue, {reserved:,} seats{dod_str}"
+                    )
+                
+                if len(trend_data) > 10:
+                    answer_parts.append(f"\n... and {len(trend_data) - 10} more days")
+                
+                return {
+                    'answer': "\n".join(answer_parts),
+                    'data': {'trend': trend_data, 'movie_title': movie_title},
+                    'query_type': 'performance_analytics'
+                }
+            
+            elif query_type == 'compare_movies':
+                movie1 = detection['movie1']
+                movie2 = detection['movie2']
+                period = detection.get('period', 'first_weekend')
+                
+                logger.info(f"📊 Comparing {movie1} vs {movie2} ({period})")
+                comparison = self.performance_service.compare_movies_performance(
+                    movie1, movie2, period, use_cache=True
+                )
+                
+                if 'error' in comparison:
+                    return {
+                        'answer': f"I couldn't compare these movies. Please check the movie titles.",
+                        'data': None
+                    }
+                
+                # Format response
+                rev1 = comparison['title1_total_revenue']
+                rev2 = comparison['title2_total_revenue']
+                diff = comparison['revenue_difference']
+                diff_pct = comparison['revenue_difference_percent']
+                
+                answer = (
+                    f"**Performance Comparison: {movie1} vs {movie2}** ({period.replace('_', ' ').title()})\n\n"
+                    f"**{movie1}:**\n"
+                    f"• Revenue: ${rev1:,.2f}\n"
+                    f"• Reserved Seats: {comparison['title1_total_reserved']:,}\n\n"
+                    f"**{movie2}:**\n"
+                    f"• Revenue: ${rev2:,.2f}\n"
+                    f"• Reserved Seats: {comparison['title2_total_reserved']:,}\n\n"
+                )
+                
+                if diff_pct is not None:
+                    sign = "+" if diff >= 0 else ""
+                    answer += (
+                        f"**Difference:** {movie1} {'outperformed' if diff > 0 else 'underperformed'} {movie2} "
+                        f"by ${abs(diff):,.2f} ({sign}{diff_pct:.1f}%)"
+                    )
+                
+                return {
+                    'answer': answer,
+                    'data': comparison,
+                    'query_type': 'performance_analytics'
+                }
+            
+            elif query_type == 'current_first_weekend_movies':
+                logger.info("📊 Getting current first weekend movies")
+                movies = self.performance_service.get_current_first_weekend_movies()
+                
+                if not movies:
+                    return {
+                        'answer': "No movies are currently in their first weekend (DIR -1 to DIR 3).",
+                        'data': []
+                    }
+                
+                answer_parts = ["**Movies Currently in First Weekend (DIR -1 to DIR 3):**\n"]
+                
+                # Calculate totals for context
+                # Convert Decimal to float for calculations
+                from decimal import Decimal
+                total_revenue = float(sum(float(m.get('first_weekend_revenue', 0) or 0) for m in movies[:10]))
+                top_revenue = float(movies[0].get('first_weekend_revenue', 0) or 0) if movies else 0.0
+                
+                # Add intro explanation
+                answer_parts.append(
+                    f"There are **{len(movies)}** movies currently in their opening weekend. "
+                    f"The combined first weekend revenue across all movies is **${total_revenue:,.2f}**. "
+                    f"Here's how they're performing:\n"
+                )
+                
+                # List movies with explanations
+                for idx, movie in enumerate(movies[:10], 1):
+                    title = movie['title']
+                    # Convert Decimal to float for calculations
+                    revenue = float(movie.get('first_weekend_revenue', 0) or 0)
+                    reserved = int(movie.get('first_weekend_reserved', 0) or 0)
+                    impressions = int(movie.get('first_weekend_impressions', 0) or 0)
+                    avg_price = float(movie.get('avg_price', 0) or 0)
+                    genre = movie.get('genre', 'Unknown')
+                    studio = movie.get('studio_name', 'Unknown')
+                    
+                    # Calculate percentage of top performer
+                    if idx == 1:
+                        performance_note = "🏆 **Leading performer** - highest first weekend revenue"
+                    elif top_revenue > 0:
+                        pct_of_top = (revenue / top_revenue) * 100
+                        if pct_of_top >= 80:
+                            performance_note = "💪 **Strong performance** - within 80% of top performer"
+                        elif pct_of_top >= 50:
+                            performance_note = "👍 **Solid performance** - about half of top performer"
+                        else:
+                            performance_note = f"📊 Performing at {pct_of_top:.1f}% of top performer"
+                    else:
+                        performance_note = ""
+                    
+                    answer_parts.append(
+                        f"\n**{idx}. {title}** ({genre}) - {studio}\n"
+                        f"   • Revenue: **${revenue:,.2f}**\n"
+                        f"   • Reserved Seats: {reserved:,}\n"
+                        f"   • Impressions: {impressions:,}\n"
+                        f"   • Average Price: ${avg_price:,.2f}\n"
+                        f"   {performance_note}"
+                    )
+                
+                # Add summary analysis
+                if len(movies) > 1:
+                    answer_parts.append(
+                        f"\n**Analysis:** "
+                        f"**{movies[0]['title']}** is leading with ${top_revenue:,.2f} in first weekend revenue, "
+                        f"demonstrating strong opening performance. "
+                        f"The gap between the top performer and others indicates varying levels of audience interest "
+                        f"and marketing effectiveness. First weekend performance is a strong indicator of a film's "
+                        f"potential lifetime box office success."
+                    )
+                
+                return {
+                    'answer': "\n".join(answer_parts),
+                    'data': movies,
+                    'query_type': 'performance_analytics'
+                }
+            
+            elif query_type == 'advance_bookings':
+                movie_title = detection['movie_title']
+                dbr_threshold = detection.get('dbr_threshold', 0)  # Default to 0 (DBR < 0 = all advance bookings)
+                logger.info(f"📊 Getting advance bookings for: {movie_title} (DBR < {dbr_threshold})")
+                
+                advance_data = self.performance_service.get_advance_bookings(
+                    movie_title, dbr_threshold=dbr_threshold
+                )
+                
+                # Update get_advance_bookings to use < instead of <= for threshold 0
+                threshold_label = f"DBR < {dbr_threshold}" if dbr_threshold == 0 else f"DBR ≤ {dbr_threshold}"
+                
+                answer = (
+                    f"**{movie_title} - Advance Bookings ({threshold_label}):**\n\n"
+                    f"• **Total Advance Reservations**: {advance_data['total_advance_reservations']:,}\n"
+                    f"• **Total Advance Revenue**: ${advance_data['total_advance_revenue']:,.2f}"
+                )
+                
+                return {
+                    'answer': answer,
+                    'data': advance_data,
+                    'query_type': 'performance_analytics'
+                }
+            
+            elif query_type == 'compare_all_movies_first_weekend':
+                logger.info("📊 Comparing all movies first weekend performance")
+                movies_data = self.performance_service.compare_all_movies_first_weekend()
+                
+                if not movies_data:
+                    return {
+                        'answer': "No first weekend performance data available for comparison.",
+                        'data': []
+                    }
+                
+                answer_parts = ["**First Weekend Performance Comparison (All Movies):**\n"]
+                for movie in movies_data[:10]:
+                    title = movie['title']
+                    revenue = movie.get('first_weekend_revenue', 0)
+                    answer_parts.append(f"• **{title}**: ${revenue:,.2f}")
+                
+                return {
+                    'answer': "\n".join(answer_parts),
+                    'data': movies_data,
+                    'query_type': 'performance_analytics'
+                }
+            
+            elif query_type == 'movies_dbr_range':
+                dbr_min = detection.get('dbr_min', -7)
+                dbr_max = detection.get('dbr_max', 0)
+                logger.info(f"📊 Getting movies with DBR between {dbr_min} and {dbr_max}")
+                movies = self.performance_service.get_movies_by_dbr_range(dbr_min=dbr_min, dbr_max=dbr_max)
+                
+                # Group by movie title to show unique movies
+                unique_movies = {}
+                for movie in movies:
+                    title = movie.get('title', 'Unknown')
+                    dbr = movie.get('dbr_value', 'N/A')
+                    if title not in unique_movies:
+                        unique_movies[title] = []
+                    unique_movies[title].append(dbr)
+                
+                answer_parts = [f"**Movies with DBR between {dbr_min} and {dbr_max} days (Releasing within a week):**\n"]
+                for title, dbr_values in unique_movies.items():
+                    dbr_range_str = f"{min(dbr_values)} to {max(dbr_values)}"
+                    if len(set(dbr_values)) == 1:
+                        dbr_range_str = str(dbr_values[0])
+                    answer_parts.append(f"• **{title}** (DBR: {dbr_range_str})")
+                
+                return {
+                    'answer': "\n".join(answer_parts),
+                    'data': movies,
+                    'query_type': 'performance_analytics'
+                }
+            
+            elif query_type == 'dir_range_comparison':
+                movie_title = detection['movie_title']
+                dir_range1 = detection['dir_range1']
+                dir_range2 = detection['dir_range2']
+                logger.info(f"📊 Comparing DIR ranges {dir_range1} vs {dir_range2} for {movie_title}")
+                
+                comparison = self.performance_service.compare_dir_ranges(
+                    movie_title, dir_range1, dir_range2
+                )
+                
+                if 'error' in comparison:
+                    return {
+                        'answer': f"I couldn't compare DIR ranges for '{movie_title}'. Please check the movie title.",
+                        'data': None
+                    }
+                
+                answer = (
+                    f"**{movie_title} - DIR Range Comparison:**\n\n"
+                    f"**DIR {dir_range1[0]}-{dir_range1[1]}:**\n"
+                    f"• Revenue: ${comparison['range1_revenue']:,.2f}\n"
+                    f"• Reserved Seats: {comparison['range1_reserved']:,}\n\n"
+                    f"**DIR {dir_range2[0]}-{dir_range2[1]}:**\n"
+                    f"• Revenue: ${comparison['range2_revenue']:,.2f}\n"
+                    f"• Reserved Seats: {comparison['range2_reserved']:,}\n\n"
+                    f"**Difference:** ${comparison['revenue_difference']:,.2f} "
+                    f"({comparison.get('revenue_difference_percent', 0):.1f}%)"
+                )
+                
+                return {
+                    'answer': answer,
+                    'data': comparison,
+                    'query_type': 'performance_analytics'
+                }
+            
+            elif query_type == 'highest_advance_booking':
+                dbr_threshold = detection.get('dbr_threshold', -7)
+                logger.info(f"📊 Finding movie with highest advance booking (DBR <= {dbr_threshold})")
+                
+                result = self.performance_service.get_highest_advance_booking(dbr_threshold)
+                
+                if 'error' in result:
+                    return {
+                        'answer': "I couldn't find advance booking data.",
+                        'data': None
+                    }
+                
+                answer = (
+                    f"**Highest Advance Booking Rate (DBR ≤ {dbr_threshold}):**\n\n"
+                    f"• **Movie**: {result['title']}\n"
+                    f"• **Total Advance Reservations**: {result['total_advance_bookings']:,}\n"
+                    f"• **Total Advance Revenue**: ${result.get('total_advance_revenue', 0):,.2f}"
+                )
+                
+                return {
+                    'answer': answer,
+                    'data': result,
+                    'query_type': 'performance_analytics'
+                }
+            
+            elif query_type == 'cumulative_advance_booking':
+                movie_title = detection['movie_title']
+                dbr_start = detection['dbr_start']
+                dbr_end = detection['dbr_end']
+                logger.info(f"📊 Getting cumulative advance booking for {movie_title} (DBR {dbr_start} to {dbr_end})")
+                
+                cumulative_data = self.performance_service.get_cumulative_advance_booking(
+                    movie_title, dbr_start, dbr_end
+                )
+                
+                if 'error' in cumulative_data:
+                    return {
+                        'answer': f"I couldn't find cumulative advance booking data for '{movie_title}'.",
+                        'data': None
+                    }
+                
+                answer_parts = [
+                    f"**{movie_title} - Cumulative Advance Booking Sales (DBR {dbr_start} to {dbr_end}):**\n"
+                ]
+                
+                # Show sample of cumulative data
+                for item in cumulative_data.get('daily_data', [])[:10]:
+                    dbr = item.get('dbr_value', 'N/A')
+                    daily_rev = item.get('daily_revenue', 0)
+                    cum_rev = item.get('cumulative_revenue', 0)
+                    cum_reserved = item.get('cumulative_reserved', 0)
+                    answer_parts.append(
+                        f"• **DBR {dbr}**: Daily ${daily_rev:,.2f} | "
+                        f"Cumulative: ${cum_rev:,.2f} revenue, {cum_reserved:,} reservations"
+                    )
+                
+                if len(cumulative_data.get('daily_data', [])) > 10:
+                    answer_parts.append(f"\n... and {len(cumulative_data['daily_data']) - 10} more days")
+                
+                total_revenue = cumulative_data.get('total_revenue', 0)
+                total_reserved = cumulative_data.get('total_reserved', 0)
+                answer_parts.append(
+                    f"\n**Total (DBR {dbr_start} to {dbr_end}):** "
+                    f"${total_revenue:,.2f} revenue, {total_reserved:,} reservations"
+                )
+                
+                return {
+                    'answer': "\n".join(answer_parts),
+                    'data': cumulative_data,
+                    'query_type': 'performance_analytics'
+                }
+            
+            elif query_type == 'best_comp_titles':
+                logger.info("📊 Finding best comp titles")
+                
+                # Extract target movie if specified
+                target_movie = None
+                original_query = detection.get('original_query', '')
+                if original_query:
+                    target_title = self._extract_movie_title(original_query.lower())
+                    if target_title:
+                        target_movie = target_title
+                
+                comp_titles = self.performance_service.get_best_comp_titles(limit=10)
+                
+                if not comp_titles:
+                    return {
+                        'answer': "No comp title performance data available.",
+                        'data': []
+                    }
+                
+                answer_parts = ["**Best Performing Movies (Comp Titles):**\n"]
+                
+                # If target movie specified, highlight it and compare
+                target_found = False
+                target_idx = None
+                if target_movie:
+                    for idx, comp in enumerate(comp_titles):
+                        if comp.get('title', '').lower() == target_movie.lower():
+                            target_found = True
+                            target_idx = idx
+                            break
+                
+                # Calculate benchmark metrics
+                # Convert Decimal to float for calculations
+                from decimal import Decimal
+                top_revenue = float(comp_titles[0].get('first_weekend_revenue', 0) or 0) if comp_titles else 0.0
+                avg_revenue = float(sum(float(m.get('first_weekend_revenue', 0) or 0) for m in comp_titles) / len(comp_titles) if comp_titles else 0.0)
+                
+                # Add intro with context
+                if target_movie and target_found:
+                    target_revenue = float(comp_titles[target_idx].get('first_weekend_revenue', 0) or 0)
+                    answer_parts.append(
+                        f"Here are the best performing comparable titles for benchmark analysis. "
+                        f"**{target_movie}** is ranked **#{target_idx + 1}** with ${target_revenue:,.2f} in first weekend revenue.\n"
+                    )
+                else:
+                    answer_parts.append(
+                        f"Here are the top performing movies based on first weekend revenue performance. "
+                        f"The average first weekend revenue across these titles is **${avg_revenue:,.2f}**.\n"
+                    )
+                
+                # List comp titles with detailed explanations
+                for idx, movie in enumerate(comp_titles, 1):
+                    title = movie.get('title', 'Unknown')
+                    # Convert Decimal to float for calculations
+                    revenue = float(movie.get('first_weekend_revenue', 0) or 0)
+                    reserved = int(movie.get('first_weekend_reserved', 0) or 0)
+                    impressions = int(movie.get('first_weekend_impressions', 0) or 0)
+                    avg_price = float(movie.get('avg_price', 0) or 0)
+                    genre = movie.get('genre', 'Unknown')
+                    studio = movie.get('studio_name', 'Unknown')
+                    
+                    # Performance analysis (all values are now float)
+                    if idx == 1:
+                        performance_desc = "🏆 **Top performer** - exceptional opening weekend"
+                        if top_revenue > avg_revenue * 1.5:
+                            performance_desc += ", significantly above average"
+                    elif revenue >= avg_revenue * 1.2:
+                        performance_desc = "💪 **Strong performer** - well above average"
+                    elif revenue >= avg_revenue * 0.8:
+                        performance_desc = "✅ **Above average** - solid performance"
+                    elif revenue >= avg_revenue * 0.5:
+                        performance_desc = "📊 **Average performer** - meets expectations"
+                    else:
+                        performance_desc = "📉 **Below average** - needs improvement"
+                    
+                    # Mark target movie if found
+                    if target_movie and title.lower() == target_movie.lower():
+                        performance_desc = f"🎯 **Your movie** - {performance_desc.lower()}"
+                    
+                    answer_parts.append(
+                        f"\n**{idx}. {title}** ({genre})\n"
+                        f"   • Studio: {studio}\n"
+                        f"   • First Weekend Revenue: **${revenue:,.2f}**\n"
+                        f"   • Reserved Seats: {reserved:,}\n"
+                        f"   • Impressions: {impressions:,}\n"
+                        f"   • Average Price: ${avg_price:,.2f}\n"
+                        f"   • {performance_desc}"
+                    )
+                    
+                    # Add comparison note for target movie
+                    if target_movie and title.lower() == target_movie.lower() and idx > 1:
+                        pct_of_top = (revenue / top_revenue) * 100 if top_revenue > 0 else 0
+                        gap = top_revenue - revenue
+                        answer_parts.append(
+                            f"   • Compared to top performer: {pct_of_top:.1f}% of #1, "
+                            f"${gap:,.2f} revenue gap"
+                        )
+                
+                # Add summary insights
+                answer_parts.append(
+                    f"\n**Key Insights:**\n"
+                    f"• The top performer (**{comp_titles[0].get('title', 'N/A')}**) has generated "
+                    f"${top_revenue:,.2f}, setting a strong benchmark for comparable titles.\n"
+                    f"• Movies performing above ${avg_revenue:,.2f} (average) demonstrate strong audience appeal "
+                    f"and effective marketing strategies.\n"
+                    f"• First weekend performance is critical for box office momentum and indicates potential "
+                    f"long-term success."
+                )
+                
+                # Add recommendation if target movie found
+                if target_movie and target_found:
+                    target_revenue = float(comp_titles[target_idx].get('first_weekend_revenue', 0) or 0)
+                    if target_revenue < avg_revenue:
+                        answer_parts.append(
+                            f"\n**Recommendation for {target_movie}:** "
+                            f"Currently below average performance. Consider reviewing marketing strategy, "
+                            f"audience targeting, or release timing to improve first weekend results."
+                        )
+                    elif target_revenue < top_revenue * 0.8:
+                        answer_parts.append(
+                            f"\n**Recommendation for {target_movie}:** "
+                            f"Solid performance but has room for growth. Analyze top performers' strategies "
+                            f"to identify improvement opportunities."
+                        )
+                
+                return {
+                    'answer': "\n".join(answer_parts),
+                    'data': comp_titles,
+                    'query_type': 'performance_analytics'
+                }
+            
+        except Exception as e:
+            logger.error(f"❌ Error handling performance query: {e}", exc_info=True)
+            return {
+                'answer': f"I encountered an error processing this performance query: {str(e)}. Please try rephrasing.",
+                'data': None
+            }
+        
+        return {
+            'answer': "I couldn't process this performance query. Please try rephrasing.",
+            'data': None
+        }
+    
     def query(self, user_query, top_k=None, return_sources=False):
        
         logger.info(f"🔍 Processing query: {user_query}")
 
         try:
+            # NEW: Check if this is a performance analytics query first
+            perf_detection = self.detect_performance_query(user_query)
+            if perf_detection:
+                logger.info(f"📊 Detected performance query: {perf_detection['type']}")
+                result = self.handle_performance_query(perf_detection)
+                if 'answer' in result:
+                    return result
             # Step 1: Retrieve relevant documents
             logger.info("📚 Retrieving relevant documents...")
             matches = self.retrieve_context(user_query, top_k)

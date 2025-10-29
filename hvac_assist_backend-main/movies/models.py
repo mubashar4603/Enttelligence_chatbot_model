@@ -371,3 +371,109 @@ class QueryLog(models.Model):
     
     def __str__(self):
         return f"Query: {self.query_text[:50]}... - {self.query_type}"
+
+
+class MovieDailyPerformance(models.Model):
+    """
+    Pre-calculated daily performance metrics for movies based on DIR (Days In Release).
+    This model stores aggregated daily data for fast querying of performance analytics.
+    
+    DIR Calculation (as per SQL logic):
+    - If DATEDIFF(date_sh, release_date) < 0: DIR = DATEDIFF(date_sh, release_date)
+    - If DATEDIFF(date_sh, release_date) >= 0: DIR = DATEDIFF(date_sh, release_date) + 1
+    
+    This enables fast queries for:
+    - First weekend performance (DIR -1 to DIR 3)
+    - Day-over-Day growth analysis
+    - Weekly comparisons
+    - Advance booking analysis (DBR - Days Before Release)
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    
+    # Movie details
+    title = models.CharField(max_length=255, db_index=True)
+    release_date = models.DateField(db_index=True)
+    
+    # Time metrics
+    date_sh = models.DateField(db_index=True)  # Show date
+    dir_value = models.IntegerField(db_index=True)  # Days In Release (calculated)
+    dbr_value = models.IntegerField(null=True, blank=True, db_index=True)  # Days Before Release (if applicable)
+    
+    # Daily aggregated metrics
+    total_reserved_seats = models.IntegerField(default=0)
+    total_impressions = models.IntegerField(default=0)  # Same as reserved_seats
+    total_revenue = models.DecimalField(max_digits=15, decimal_places=2, default=0)  # Sales estimate = price * reserved
+    total_seats = models.IntegerField(default=0)
+    
+    # Day-over-Day metrics (calculated)
+    dod_revenue_change = models.FloatField(null=True, blank=True)  # Percentage change vs previous day
+    dod_reserved_change = models.FloatField(null=True, blank=True)  # Percentage change in reservations
+    
+    # Revenue breakdown (if needed)
+    cumulative_revenue = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    cumulative_reserved = models.IntegerField(default=0)
+    
+    # Additional metrics
+    avg_price = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+    occupancy_rate = models.FloatField(null=True, blank=True)
+    
+    # Timestamps
+    calculated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'movie_daily_performance'
+        indexes = [
+            models.Index(fields=['title', 'release_date']),
+            models.Index(fields=['title', 'dir_value']),
+            models.Index(fields=['title', 'dbr_value']),
+            models.Index(fields=['dir_value']),
+            models.Index(fields=['date_sh']),
+            models.Index(fields=['total_revenue']),
+        ]
+        unique_together = [['title', 'release_date', 'date_sh']]  # One record per movie per day
+    
+    def __str__(self):
+        return f"{self.title} (DIR {self.dir_value}) - ${self.total_revenue:,.2f}"
+
+
+class MoviePerformanceComparison(models.Model):
+    """
+    Pre-calculated comparison data for multiple movies over time periods.
+    Used for queries like "Compare first weekend of Movie A vs Movie B"
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    
+    # Comparison details
+    title1 = models.CharField(max_length=255, db_index=True)
+    title2 = models.CharField(max_length=255, db_index=True)
+    release_date1 = models.DateField()
+    release_date2 = models.DateField()
+    
+    # Time period
+    dir_range_start = models.IntegerField()
+    dir_range_end = models.IntegerField()
+    period_label = models.CharField(max_length=100)  # e.g., "first_weekend", "first_week", "first_5_days"
+    
+    # Comparison metrics
+    title1_total_revenue = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    title2_total_revenue = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    title1_total_reserved = models.IntegerField(default=0)
+    title2_total_reserved = models.IntegerField(default=0)
+    
+    revenue_difference = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+    revenue_difference_percent = models.FloatField(null=True, blank=True)
+    
+    # Timestamps
+    calculated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'movie_performance_comparison'
+        indexes = [
+            models.Index(fields=['title1', 'title2']),
+            models.Index(fields=['period_label']),
+        ]
+    
+    def __str__(self):
+        return f"{self.title1} vs {self.title2} ({self.period_label})"

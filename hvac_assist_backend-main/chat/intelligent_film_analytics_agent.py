@@ -2550,6 +2550,32 @@ If you implement these changes, you could potentially increase total revenue by 
             if not self.model or not self.llama_llm:
                 self.initialize_components()
             
+            # PRIORITY: Check for performance analytics queries FIRST (before other intent detection)
+            # These queries need special handling for DIR/DBR calculations
+            try:
+                from .rag_service import get_rag_service
+                rag_service = get_rag_service()
+                
+                # Check if this is a performance analytics query
+                perf_detection = rag_service.detect_performance_query(query)
+                if perf_detection:
+                    logger.info(f"📊 Detected performance analytics query: {perf_detection['type']}")
+                    perf_result = rag_service.handle_performance_query(perf_detection)
+                    
+                    if 'answer' in perf_result:
+                        # Format response to match intelligent agent format
+                        return {
+                            'type': 'performance_analytics',
+                            'message': perf_result.get('answer', ''),
+                            'data': perf_result.get('data'),
+                            'sources': None,
+                            'retrieved_count': 0,
+                            'accuracy': '100%',
+                            'query_type': perf_result.get('query_type', 'performance_analytics')
+                        }
+            except Exception as perf_error:
+                logger.warning(f"⚠️ Performance query detection failed, continuing with normal flow: {perf_error}")
+            
             # Understand query intent using AI
             query_intent = self.understand_query_intent(query)
             query_type = query_intent.get('query_type', 'general')
