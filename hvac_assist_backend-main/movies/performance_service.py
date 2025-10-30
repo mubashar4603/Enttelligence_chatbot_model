@@ -1283,7 +1283,7 @@ class MoviePerformanceService:
                                       dbr_end: int) -> Dict[str, Any]:
         """
         Get cumulative advance booking sales for a movie in DBR range.
-        Uses raw SQL for accurate DBR calculation from last_updates.
+        Uses raw SQL matching the user's ground-truth SQL with windowed cumulative sums.
         """
         from django.db import connection
         from datetime import datetime
@@ -1291,42 +1291,63 @@ class MoviePerformanceService:
         # Query directly from Movie table grouped by DBR
         with connection.cursor() as cursor:
             cursor.execute("""
+                WITH movie_data AS (
+                    SELECT 
+                        title,
+                        release_date,
+                        last_updates,
+                        reserved,
+                        price,
+                        actual_total_seats,
+                        date_sh
+                    FROM movies
+                    WHERE UPPER(title) = UPPER(%s)
+                ), dbr_calculation AS (
+                    SELECT 
+                        title,
+                        release_date,
+                        last_updates,
+                        reserved,
+                        price,
+                        actual_total_seats,
+                        date_sh,
+                        CASE 
+                            WHEN (last_updates::date - release_date) < 0 THEN (last_updates::date - release_date)
+                            WHEN (last_updates::date - release_date) >= 0 THEN (last_updates::date - release_date) + 1
+                        END AS DBR,
+                        (COALESCE(reserved, 0) * CAST(REPLACE(COALESCE(price::text, '0'), '$', '') AS DECIMAL(10,2))) AS revenue
+                    FROM movie_data
+                ), filtered_dbr AS (
+                    SELECT 
+                        title,
+                        DBR,
+                        SUM(COALESCE(reserved, 0)) AS daily_reserved,
+                        SUM(COALESCE(revenue, 0)) AS daily_revenue,
+                        SUM(COALESCE(actual_total_seats, 0)) AS daily_total_seats
+                    FROM dbr_calculation
+                    WHERE DBR BETWEEN %s AND %s
+                      AND (date_sh - release_date) <= 2
+                    GROUP BY title, DBR
+                ), cumulative_sales AS (
+                    SELECT 
+                        title,
+                        DBR,
+                        daily_reserved,
+                        daily_revenue,
+                        daily_total_seats,
+                        SUM(daily_reserved) OVER (ORDER BY DBR ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cumulative_reserved,
+                        SUM(daily_revenue) OVER (ORDER BY DBR ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cumulative_revenue,
+                        SUM(daily_total_seats) OVER (ORDER BY DBR ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS cumulative_total_seats
+                    FROM filtered_dbr
+                )
                 SELECT 
-                    CASE 
-                        WHEN (last_updates::date - release_date) < 0 
-                        THEN (last_updates::date - release_date)
-                        WHEN (last_updates::date - release_date) >= 0 
-                        THEN (last_updates::date - release_date) + 1
-                    END AS DBR,
-                    SUM(
-                        CASE 
-                            WHEN reserved IS NULL OR reserved < 0 THEN 0
-                            ELSE reserved
-                        END
-                    ) as daily_reserved,
-                    SUM(
-                        CASE 
-                            WHEN reserved IS NULL OR reserved < 0 THEN 0
-                            WHEN price IS NULL OR price <= 0 THEN 0
-                            ELSE (price * reserved)
-                        END
-                    ) as daily_revenue
-                FROM movies
-                WHERE UPPER(title) = UPPER(%s)
-                AND price IS NOT NULL 
-                AND price > 0
-                AND reserved IS NOT NULL
-                AND reserved >= 0
-                AND (date_sh - release_date) <= 2
-                AND (
-                    CASE 
-                        WHEN (last_updates::date - release_date) < 0 
-                        THEN (last_updates::date - release_date)
-                        WHEN (last_updates::date - release_date) >= 0 
-                        THEN (last_updates::date - release_date) + 1
-                    END
-                ) BETWEEN %s AND %s
-                GROUP BY DBR
+                    title,
+                    DBR,
+                    daily_reserved,
+                    cumulative_reserved,
+                    daily_revenue,
+                    cumulative_revenue
+                FROM cumulative_sales
                 ORDER BY DBR
             """, [movie_title, dbr_start, dbr_end])
             
@@ -1335,32 +1356,23 @@ class MoviePerformanceService:
             if not daily_data_raw:
                 return {'error': f'No advance booking data found for "{movie_title}" in DBR range {dbr_start} to {dbr_end}'}
             
-            cumulative_revenue = Decimal('0')
-            cumulative_reserved = 0
             daily_list = []
-            
             for row in daily_data_raw:
-                dbr, daily_res, daily_rev = row
-                daily_reserved_val = int(daily_res or 0)
-                daily_revenue_val = Decimal(str(daily_rev or 0))
-                
-                cumulative_revenue += daily_revenue_val
-                cumulative_reserved += daily_reserved_val
-                
+                _title, dbr, daily_res, cum_res, daily_rev, cum_rev = row
                 daily_list.append({
                     'dbr_value': int(dbr),
-                    'daily_revenue': daily_revenue_val,
-                    'daily_reserved': daily_reserved_val,
-                    'cumulative_revenue': cumulative_revenue,
-                    'cumulative_reserved': cumulative_reserved
+                    'daily_revenue': Decimal(str(daily_rev or 0)),
+                    'daily_reserved': int(daily_res or 0),
+                    'cumulative_revenue': Decimal(str(cum_rev or 0)),
+                    'cumulative_reserved': int(cum_res or 0)
                 })
         
         return {
             'title': movie_title,
             'dbr_range': (dbr_start, dbr_end),
             'daily_data': daily_list,
-            'total_revenue': cumulative_revenue,
-            'total_reserved': cumulative_reserved
+            'total_revenue': daily_list[-1]['cumulative_revenue'] if daily_list else Decimal('0'),
+            'total_reserved': daily_list[-1]['cumulative_reserved'] if daily_list else 0
         }
     
     def get_best_comp_titles(self, limit: int = 10) -> List[Dict[str, Any]]:
@@ -1406,4 +1418,36 @@ class MoviePerformanceService:
                 enhanced_list.append(comp)
         
         return enhanced_list
+
+    def get_top_circuit_in_dma(self, dma_name: str) -> Dict[str, Any]:
+        """Return the circuit with the most theaters in a given DMA (case-insensitive)."""
+        from django.db.models import Count
+        qs = (
+            Movie.objects
+            .filter(dma__isnull=False)
+            .filter(dma__iexact=dma_name)
+            .values('circuit_name')
+            .annotate(theater_count=Count('theater_id', distinct=True))
+            .order_by('-theater_count')
+        )
+        top = qs.first()
+        if not top:
+            return {'error': f'No theaters found in DMA "{dma_name}"'}
+        return {
+            'dma': dma_name,
+            'circuit_name': top['circuit_name'] or 'Unknown',
+            'theater_count': int(top['theater_count'] or 0)
+        }
+
+    def get_movies_with_runtime_over(self, minutes: int, limit: int = 50) -> List[Dict[str, Any]]:
+        """List distinct movies with runtime > minutes, ordered by runtime desc."""
+        qs = (
+            Movie.objects
+            .filter(runtime__isnull=False)
+            .filter(runtime__gt=minutes)
+            .values('title', 'release_date', 'runtime', 'genre', 'rating', 'studio_name')
+            .distinct()
+            .order_by('-runtime')[:limit]
+        )
+        return list(qs)
 

@@ -526,6 +526,17 @@ class MovieRAGService:
         
         # Pattern 8: Cumulative advance booking sales
         # "What are the cumulative advance booking sales estimates for [movie] from DBR -50 to DBR -4"
+        # Prefer natural phrasing with "days before" to infer negative DBR when not explicitly signed
+        days_before_match = re.search(r'from\s+(\d+)\s+days?\s+before.*?to\s+(\d+)\s+days?\s+before', query_lower)
+        if days_before_match:
+            movie_title = self._extract_movie_title(query_lower)
+            if movie_title:
+                return {
+                    'type': 'cumulative_advance_booking',
+                    'movie_title': movie_title,
+                    'dbr_start': -int(days_before_match.group(1)),  # negate for "before"
+                    'dbr_end': -int(days_before_match.group(2))     # negate for "before"
+                }
         cumulative_match = re.search(r'cumulative.*?(?:advance|booking).*?(?:sales|revenue|estimate).*?(?:from|dbr).*?(-?\d+).*?(?:to|dbr).*?(-?\d+)', query_lower)
         if cumulative_match:
             movie_title = self._extract_movie_title(query_lower)
@@ -653,22 +664,95 @@ class MovieRAGService:
                         'data': None
                     }
                 
-                # Format response
-                revenue = perf_data['total_revenue']
-                reserved = perf_data['total_reserved_seats']
+                # Format response with natural language explanations
+                from decimal import Decimal
+                revenue = float(perf_data['total_revenue'])
+                reserved = int(perf_data['total_reserved_seats'])
+                impressions = int(perf_data['total_impressions'])
+                avg_price = float(perf_data['avg_price'])
+                occupancy = float(perf_data['avg_occupancy_rate'])
                 
-                answer = (
-                    f"**{movie_title} - {period.replace('_', ' ').title()} Performance:**\n\n"
-                    f"• **Total Revenue**: ${revenue:,.2f}\n"
+                # Context about first weekend performance
+                period_name = period.replace('_', ' ').title()
+                dir_start, dir_end = perf_data['dir_range']
+                
+                answer_parts = [
+                    f"**{movie_title} - {period_name} Performance (DIR {dir_start} to DIR {dir_end}):**\n\n"
+                ]
+                
+                # Add intro explanation
+                if period == 'first_weekend':
+                    answer_parts.append(
+                        f"The first weekend represents the critical opening period of a film's theatrical release, "
+                        f"spanning from the day before release (DIR -1) through the third day after release (DIR 3). "
+                        f"This period sets the tone for the movie's box office trajectory and audience reception.\n"
+                    )
+                
+                # Performance metrics with context
+                answer_parts.append("**Performance Metrics:**\n")
+                answer_parts.append(f"• **Total Revenue**: ${revenue:,.2f}\n")
+                
+                # Add revenue context
+                if revenue >= 50000000:
+                    revenue_quality = "exceptional"
+                    revenue_note = "demonstrating blockbuster-level performance"
+                elif revenue >= 30000000:
+                    revenue_quality = "strong"
+                    revenue_note = "indicating solid audience interest"
+                elif revenue >= 15000000:
+                    revenue_quality = "moderate"
+                    revenue_note = "showing decent market reception"
+                else:
+                    revenue_quality = "developing"
+                    revenue_note = "suggesting niche audience appeal"
+                
+                answer_parts.append(
+                    f"   This represents a {revenue_quality} opening, {revenue_note}.\n"
+                )
+                
+                answer_parts.append(
                     f"• **Total Reserved Seats**: {reserved:,}\n"
-                    f"• **Total Impressions**: {perf_data['total_impressions']:,}\n"
-                    f"• **Average Price**: ${perf_data['avg_price']:,.2f}\n"
-                    f"• **Average Occupancy Rate**: {perf_data['avg_occupancy_rate']:.1f}%\n\n"
-                    f"Performance period: DIR {perf_data['dir_range'][0]} to DIR {perf_data['dir_range'][1]}"
+                    f"   This indicates the total number of tickets sold during the first weekend.\n"
+                    f"• **Total Impressions**: {impressions:,}\n"
+                    f"   Each impression represents a ticket sold, showing the total audience reach.\n"
+                    f"• **Average Price**: ${avg_price:,.2f}\n"
+                )
+                
+                # Price context
+                if avg_price >= 15:
+                    price_note = "premium pricing, likely includes IMAX, 3D, or premium format screenings"
+                elif avg_price >= 12:
+                    price_note = "standard market pricing"
+                else:
+                    price_note = "value-oriented pricing, may include matinee or discount screenings"
+                
+                answer_parts.append(f"   {price_note.capitalize()}.\n")
+                answer_parts.append(f"• **Average Occupancy Rate**: {occupancy:.1f}%\n")
+                
+                # Occupancy context
+                if occupancy >= 80:
+                    occupancy_note = "exceptional demand, theaters operating near capacity"
+                elif occupancy >= 50:
+                    occupancy_note = "strong demand, healthy audience turnout"
+                elif occupancy >= 25:
+                    occupancy_note = "moderate demand, typical for first weekend"
+                else:
+                    occupancy_note = "lower demand, may indicate limited market appeal or wide release strategy"
+                
+                answer_parts.append(f"   {occupancy_note.capitalize()}.\n")
+                
+                # Overall assessment
+                answer_parts.append(
+                    f"\n**Assessment:**\n"
+                    f"With ${revenue:,.2f} in first weekend revenue and {reserved:,} tickets sold, "
+                    f"**{movie_title}** shows {'strong' if revenue >= 30000000 else 'moderate' if revenue >= 15000000 else 'developing'} "
+                    f"opening performance. The {occupancy:.1f}% occupancy rate indicates "
+                    f"{'excellent' if occupancy >= 50 else 'adequate' if occupancy >= 25 else 'potential for improvement'} "
+                    f"theater utilization."
                 )
                 
                 return {
-                    'answer': answer,
+                    'answer': "\n".join(answer_parts),
                     'data': perf_data,
                     'query_type': 'performance_analytics'
                 }
@@ -870,11 +954,69 @@ class MovieRAGService:
                         'data': []
                     }
                 
-                answer_parts = ["**First Weekend Performance Comparison (All Movies):**\n"]
-                for movie in movies_data[:10]:
+                # Convert to float for calculations
+                from decimal import Decimal
+                revenues = [float(m.get('first_weekend_revenue', 0) or 0) for m in movies_data[:10]]
+                total_revenue = sum(revenues)
+                top_revenue = revenues[0] if revenues else 0
+                avg_revenue = total_revenue / len(revenues) if revenues else 0
+                
+                answer_parts = [
+                    "**First Weekend Performance Comparison (All Movies - DIR -1 to DIR 3):**\n\n"
+                ]
+                
+                # Add intro context
+                answer_parts.append(
+                    f"The first weekend (opening weekend) is critical for box office success, "
+                    f"representing the first 4-5 days of release (DIR -1 through DIR 3). "
+                    f"Across all {len(movies_data)} movies analyzed, the combined first weekend revenue totals "
+                    f"**${total_revenue:,.2f}**, with an average of **${avg_revenue:,.2f}** per movie.\n"
+                )
+                
+                # List movies with analysis
+                for idx, movie in enumerate(movies_data[:10], 1):
                     title = movie['title']
-                    revenue = movie.get('first_weekend_revenue', 0)
-                    answer_parts.append(f"• **{title}**: ${revenue:,.2f}")
+                    revenue = float(movie.get('first_weekend_revenue', 0) or 0)
+                    
+                    # Performance indicators
+                    if idx == 1:
+                        performance_note = "🏆 **Top performer** - exceptional opening weekend"
+                        if top_revenue > avg_revenue * 1.5:
+                            performance_note += ", significantly above average"
+                    elif revenue >= avg_revenue * 1.2:
+                        performance_note = "💪 **Strong performer** - well above average"
+                    elif revenue >= avg_revenue * 0.8:
+                        performance_note = "✅ **Above average** - solid opening"
+                    elif revenue >= avg_revenue * 0.5:
+                        performance_note = "📊 **Near average** - meeting expectations"
+                    else:
+                        performance_note = "📉 **Below average** - needs improvement"
+                    
+                    # Calculate percentage of top
+                    if idx > 1 and top_revenue > 0:
+                        pct_of_top = (revenue / top_revenue) * 100
+                        gap = top_revenue - revenue
+                        answer_parts.append(
+                            f"\n**{idx}. {title}**: ${revenue:,.2f}\n"
+                            f"   • {performance_note}\n"
+                            f"   • {pct_of_top:.1f}% of #1, ${gap:,.2f} behind leader"
+                        )
+                    else:
+                        answer_parts.append(
+                            f"\n**{idx}. {title}**: ${revenue:,.2f}\n"
+                            f"   • {performance_note}"
+                        )
+                
+                # Add summary insights
+                answer_parts.append(
+                    f"\n**Key Insights:**\n"
+                    f"• **{movies_data[0]['title']}** leads with ${top_revenue:,.2f}, demonstrating the strongest "
+                    f"audience appeal and marketing effectiveness in the first weekend.\n"
+                    f"• The ${top_revenue - (revenues[-1] if len(revenues) > 1 else 0):,.2f} revenue gap between the top and "
+                    f"bottom performers highlights the competitive nature of the box office.\n"
+                    f"• First weekend performance is a strong predictor of total box office success, with top performers "
+                    f"typically maintaining momentum throughout their theatrical run."
+                )
                 
                 return {
                     'answer': "\n".join(answer_parts),
@@ -888,6 +1030,12 @@ class MovieRAGService:
                 logger.info(f"📊 Getting movies with DBR between {dbr_min} and {dbr_max}")
                 movies = self.performance_service.get_movies_by_dbr_range(dbr_min=dbr_min, dbr_max=dbr_max)
                 
+                if not movies:
+                    return {
+                        'answer': f"No movies found with DBR between {dbr_min} and {dbr_max} days.",
+                        'data': []
+                    }
+                
                 # Group by movie title to show unique movies
                 unique_movies = {}
                 for movie in movies:
@@ -897,12 +1045,54 @@ class MovieRAGService:
                         unique_movies[title] = []
                     unique_movies[title].append(dbr)
                 
-                answer_parts = [f"**Movies with DBR between {dbr_min} and {dbr_max} days (Releasing within a week):**\n"]
-                for title, dbr_values in unique_movies.items():
+                # Add natural language introduction
+                days_before = abs(dbr_min)
+                answer_parts = [
+                    f"**Movies Releasing Within {days_before} Days (DBR {dbr_min} to {dbr_max}):**\n\n"
+                ]
+                
+                answer_parts.append(
+                    f"DBR (Days Before Release) indicates how many days before a movie's release date the data was recorded. "
+                    f"A DBR of {dbr_min} means {days_before} days before release, while DBR {dbr_max} represents the release day itself. "
+                    f"Movies in this range are either approaching release or have recently launched, making them important for "
+                    f"tracking pre-release buzz and early performance indicators.\n"
+                )
+                
+                answer_parts.append(f"Found **{len(unique_movies)}** unique movies in this DBR range:\n")
+                
+                for idx, (title, dbr_values) in enumerate(unique_movies.items(), 1):
                     dbr_range_str = f"{min(dbr_values)} to {max(dbr_values)}"
                     if len(set(dbr_values)) == 1:
                         dbr_range_str = str(dbr_values[0])
-                    answer_parts.append(f"• **{title}** (DBR: {dbr_range_str})")
+                    
+                    # Add context based on DBR range
+                    min_dbr = min(dbr_values)
+                    if min_dbr == dbr_max:
+                        status = "🎬 **Currently releasing** - at release day"
+                    elif min_dbr >= -1:
+                        status = "⏰ **Imminent release** - releasing within 1 day"
+                    elif min_dbr >= -3:
+                        status = "📅 **Approaching release** - releasing within 3 days"
+                    else:
+                        status = "📆 **Upcoming release** - releasing within a week"
+                    
+                    answer_parts.append(
+                        f"**{idx}. {title}**\n"
+                        f"   • DBR Range: {dbr_range_str}\n"
+                        f"   • {status}"
+                    )
+                
+                # Add summary insights
+                if len(unique_movies) > 1:
+                    answer_parts.append(
+                        f"\n**Insights:**\n"
+                        f"• These {len(unique_movies)} movies represent the current release pipeline, with data tracking "
+                        f"their journey from {days_before} days before release through the launch day.\n"
+                        f"• Monitoring DBR helps predict opening weekend performance by analyzing advance bookings and "
+                        f"pre-release audience interest.\n"
+                        f"• Movies with data across multiple DBR values show ongoing pre-release marketing and "
+                        f"booking activity, indicating active audience engagement."
+                    )
                 
                 return {
                     'answer': "\n".join(answer_parts),
@@ -988,9 +1178,61 @@ class MovieRAGService:
                 answer_parts = [
                     f"**{movie_title} - Cumulative Advance Booking Sales (DBR {dbr_start} to {dbr_end}):**\n"
                 ]
+
+                # Natural language summary
+                daily_points = cumulative_data.get('daily_data', [])
+                total_revenue = cumulative_data.get('total_revenue', 0)
+                total_reserved = cumulative_data.get('total_reserved', 0)
+                narrative_parts = []
+                if daily_points:
+                    # Peak day
+                    peak_point = max(daily_points, key=lambda x: x.get('daily_revenue', 0) or 0)
+                    peak_dbr = peak_point.get('dbr_value')
+                    peak_rev = peak_point.get('daily_revenue', 0)
+
+                    # Momentum: compare early vs late window averages
+                    n = len(daily_points)
+                    if n >= 14:
+                        early = daily_points[:7]
+                        late = daily_points[-7:]
+                    elif n >= 6:
+                        early = daily_points[:3]
+                        late = daily_points[-3:]
+                    else:
+                        early = daily_points[: max(1, n//2)]
+                        late = daily_points[max(1, n//2):]
+                    def avg_rev(points):
+                        if not points:
+                            return 0
+                        return sum((p.get('daily_revenue', 0) or 0) for p in points) / len(points)
+                    early_avg = avg_rev(early)
+                    late_avg = avg_rev(late)
+                    momentum = (late_avg - early_avg)
+                    momentum_pct = (momentum / early_avg * 100) if early_avg else 0
+
+                    # Compose narrative
+                    narrative_parts.append(
+                        f"From DBR {dbr_start} to {dbr_end}, pre-release demand accumulated to ${float(total_revenue):,.2f} across {int(total_reserved):,} reservations. "
+                    )
+                    narrative_parts.append(
+                        f"Peak pre-release activity occurred on DBR {peak_dbr} with ${float(peak_rev):,.2f} booked that day. "
+                    )
+                    if momentum > 0:
+                        narrative_parts.append(
+                            f"Booking momentum accelerated into release, with the late-window average daily revenue {momentum_pct:.1f}% higher than the early window."
+                        )
+                    elif momentum < 0:
+                        narrative_parts.append(
+                            f"Bookings decelerated slightly, with the late-window average daily revenue {abs(momentum_pct):.1f}% lower than the early window."
+                        )
+                    else:
+                        narrative_parts.append("Booking momentum was stable across the window.")
+
+                if narrative_parts:
+                    answer_parts.append("".join(narrative_parts) + "\n\n")
                 
-                # Show sample of cumulative data
-                for item in cumulative_data.get('daily_data', [])[:10]:
+                # Show full list of cumulative data (no truncation)
+                for item in cumulative_data.get('daily_data', []):
                     dbr = item.get('dbr_value', 'N/A')
                     daily_rev = item.get('daily_revenue', 0)
                     cum_rev = item.get('cumulative_revenue', 0)
@@ -1000,11 +1242,6 @@ class MovieRAGService:
                         f"Cumulative: ${cum_rev:,.2f} revenue, {cum_reserved:,} reservations"
                     )
                 
-                if len(cumulative_data.get('daily_data', [])) > 10:
-                    answer_parts.append(f"\n... and {len(cumulative_data['daily_data']) - 10} more days")
-                
-                total_revenue = cumulative_data.get('total_revenue', 0)
-                total_reserved = cumulative_data.get('total_reserved', 0)
                 answer_parts.append(
                     f"\n**Total (DBR {dbr_start} to {dbr_end}):** "
                     f"${total_revenue:,.2f} revenue, {total_reserved:,} reservations"
@@ -1171,6 +1408,57 @@ class MovieRAGService:
                 result = self.handle_performance_query(perf_detection)
                 if 'answer' in result:
                     return result
+
+            # NEW: Lightweight DB-backed handlers for non-performance data queries
+            ql = user_query.lower().strip()
+            # 1) Which circuit has the most theaters in the <DMA>?
+            dma_match = re.search(r"which\s+circuit\s+has\s+the\s+most\s+theaters\s+in\s+the\s+([\w\s-]+)\s*dma\??", ql)
+            if dma_match:
+                dma_name = dma_match.group(1).strip()
+                try:
+                    data = self.performance_service.get_top_circuit_in_dma(dma_name)
+                    if 'error' in data:
+                        return {
+                            'answer': f"No theaters found in the {dma_name} DMA. Please try a different location.",
+                            'data': None
+                        }
+                    answer = (
+                        f"**Top Circuit in {data['dma']} DMA**\n\n"
+                        f"• Circuit: {data['circuit_name']}\n"
+                        f"• Number of Theaters: {data['theater_count']:,}"
+                    )
+                    return {'answer': answer, 'data': data}
+                except Exception as e:
+                    logger.warning(f"DMA query failed: {e}")
+                    return {
+                        'answer': f"No theaters found in the {dma_name} DMA. Please try a different location.",
+                        'data': None
+                    }
+
+            # 2) Which movies have a runtime longer than <N> minutes?
+            runtime_match = re.search(r"which\s+movies\s+have\s+a\s+runtime\s+longer\s+than\s+(\d+)\s+minutes\??", ql)
+            if runtime_match:
+                try:
+                    minutes = int(runtime_match.group(1))
+                except ValueError:
+                    minutes = 150
+                movies = self.performance_service.get_movies_with_runtime_over(minutes)
+                if not movies:
+                    return {
+                        'answer': f"No movies found with runtime longer than {minutes} minutes.",
+                        'data': []
+                    }
+                parts = [f"**Movies with Runtime > {minutes} minutes:**\n"]
+                for m in movies[:25]:
+                    title = m.get('title', 'Unknown')
+                    runtime = m.get('runtime')
+                    genre = m.get('genre', 'Unknown')
+                    rating = m.get('rating', 'NR')
+                    parts.append(f"• {title} — {runtime} min | {genre} | {rating}")
+                return {
+                    'answer': "\n".join(parts),
+                    'data': movies
+                }
             # Step 1: Retrieve relevant documents
             logger.info("📚 Retrieving relevant documents...")
             matches = self.retrieve_context(user_query, top_k)
