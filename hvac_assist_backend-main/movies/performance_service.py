@@ -48,21 +48,20 @@ class MoviePerformanceService:
             return diff + 1
     
     @staticmethod
-    def calculate_dbr(last_updates: datetime, release_date: date) -> int:
+    def calculate_dbr(running_date: date, release_date: date) -> int:
         """
         Calculate DBR (Days Before Release) according to SQL logic.
         
         Args:
-            last_updates: Last update timestamp
+            running_date: Running date
             release_date: Movie release date
             
         Returns:
             DBR value (integer, negative values indicate days before release)
         """
-        if not last_updates:
+        if not running_date:
             return None
-        update_date = last_updates.date()
-        diff = (update_date - release_date).days
+        diff = (running_date - release_date).days
         if diff < 0:
             return diff
         else:
@@ -181,49 +180,30 @@ class MoviePerformanceService:
                 release_date=release_date_val
             )
             
-            # Aggregate by date_sh AND last_updates date for accurate DBR calculation
-            # DBR is calculated from last_updates, so we need to group by both
+            # Aggregate by date_sh AND running_date for accurate DBR calculation
+            # DBR is calculated from running_date, so we need to group by both
             # to capture all advance booking scenarios
             from django.db import connection
             
-            # Use raw SQL aggregation - group by date_sh and last_updates date
+            # Use raw SQL aggregation - group by date_sh and running_date
             # This ensures we capture all DBR variations
             try:
                 with connection.cursor() as cursor:
                     cursor.execute("""
                         SELECT 
                             date_sh,
-                            last_updates::date as last_update_date,
-                            SUM(
-                                CASE 
-                                    WHEN reserved IS NULL OR reserved < 0 THEN 0
-                                    ELSE reserved
-                                END
-                            ) as total_reserved,
-                            SUM(
-                                COALESCE(actual_total_seats, 0)
-                            ) as total_seats,
-                            SUM(
-                                CASE 
-                                    WHEN reserved IS NULL OR reserved < 0 THEN 0
-                                    WHEN price IS NULL OR price <= 0 THEN 0
-                                    ELSE (price * reserved)
-                                END
-                            ) as total_revenue,
-                            AVG(
-                                CASE 
-                                    WHEN price IS NULL OR price <= 0 THEN NULL
-                                    ELSE price
-                                END
-                            ) as avg_price,
-                            COUNT(id) as count_shows
+                            running_date::date as running_date_val,
+                            SUM(reserved) as total_reserved,
+                            SUM(total_seats) as total_seats,
+                            SUM(price * reserved) as total_revenue,
+                            AVG(price) as avg_price,
+                            COUNT(id) as count_shows,
+                            SUM(checkered) as total_checkered
                         FROM movies
                         WHERE UPPER(title) = UPPER(%s)
                         AND release_date = %s
-                        AND price IS NOT NULL 
-                        AND price > 0
-                        GROUP BY date_sh, last_updates::date
-                        ORDER BY date_sh, last_updates::date
+                        GROUP BY date_sh, running_date::date
+                        ORDER BY date_sh, running_date::date
                     """, [title_str, release_date_val])
                     
                     # Convert raw SQL results to dictionary format
@@ -233,12 +213,13 @@ class MoviePerformanceService:
                         row_dict = dict(zip(columns, row))
                         # Ensure proper types
                         row_dict['date_sh'] = row_dict['date_sh']
-                        row_dict['last_update_date'] = row_dict['last_update_date']
+                        row_dict['running_date_val'] = row_dict['running_date_val']
                         row_dict['total_reserved'] = int(row_dict['total_reserved'] or 0)
                         row_dict['total_seats'] = int(row_dict['total_seats'] or 0)
                         row_dict['total_revenue'] = Decimal(str(row_dict['total_revenue'] or 0))
                         row_dict['avg_price'] = Decimal(str(row_dict['avg_price'] or 0))
                         row_dict['count_shows'] = int(row_dict['count_shows'] or 0)
+                        row_dict['total_checkered'] = int(row_dict['total_checkered'] or 0)
                         aggregate_list.append(row_dict)
             except Exception as e:
                 # If database-level aggregation fails due to data type issues,
@@ -246,40 +227,35 @@ class MoviePerformanceService:
                 logger.warning(f"Database aggregation failed: {e}. Falling back to Python-level processing.")
                 
                 # Get all records and process in Python
-                all_records = list(movie_records.filter(
-                    price__isnull=False,
-                    price__gt=0
-                ).values('date_sh', 'reserved', 'price', 'actual_total_seats'))
+                all_records = list(movie_records.values('date_sh', 'reserved', 'price', 'total_seats', 'checkered', 'running_date'))
                 
-                # Group by date_sh manually
+                # Group by date_sh and running_date manually
                 from collections import defaultdict
                 daily_dict = defaultdict(lambda: {
                     'total_reserved': 0,
                     'total_seats': 0,
                     'total_revenue': Decimal('0'),
                     'prices': [],
-                    'count_shows': 0
+                    'count_shows': 0,
+                    'total_checkered': 0
                 })
                 
                 for record in all_records:
                     date_key = record['date_sh']
+                    running_date_key = record.get('running_date')
                     
-                    # Safely convert reserved
-                    try:
-                        reserved_val = int(record['reserved']) if record['reserved'] is not None else 0
-                        if reserved_val < 0:
-                            reserved_val = 0
-                    except (ValueError, TypeError):
-                        reserved_val = 0
+                    # Use reserved as-is, no filtering
+                    reserved_val = int(record['reserved']) if record['reserved'] is not None else 0
                     
-                    # Safely get price
+                    # Use price as-is, no filtering
                     price_val = Decimal(str(record['price'])) if record['price'] else Decimal('0')
                     
                     daily_dict[date_key]['total_reserved'] += reserved_val
-                    daily_dict[date_key]['total_seats'] += record.get('actual_total_seats', 0) or 0
+                    daily_dict[date_key]['total_seats'] += record.get('total_seats', 0) or 0
                     daily_dict[date_key]['total_revenue'] += price_val * Decimal(str(reserved_val))
                     daily_dict[date_key]['prices'].append(price_val)
                     daily_dict[date_key]['count_shows'] += 1
+                    daily_dict[date_key]['total_checkered'] += record.get('checkered', 0) or 0
                 
                 # Convert to list format matching the original structure
                 aggregate_list = []
@@ -288,36 +264,38 @@ class MoviePerformanceService:
                     avg_price = sum(daily_data['prices']) / len(daily_data['prices']) if daily_data['prices'] else Decimal('0')
                     aggregate_list.append({
                         'date_sh': date_key,
+                        'running_date_val': None,  # Will be set if available from records
                         'total_reserved': daily_data['total_reserved'],
                         'total_seats': daily_data['total_seats'],
                         'total_revenue': daily_data['total_revenue'],
                         'avg_price': avg_price,
-                        'count_shows': daily_data['count_shows']
+                        'count_shows': daily_data['count_shows'],
+                        'total_checkered': daily_data['total_checkered']
                     })
             
             for day_data in aggregate_list:
                 date_sh_val = day_data['date_sh']
-                last_update_date = day_data.get('last_update_date')
+                running_date_val = day_data.get('running_date_val')
                 dir_value = self.calculate_dir(date_sh_val, release_date_val)
                 
                 total_reserved = day_data['total_reserved'] or 0
                 total_seats = day_data['total_seats'] or 0
                 total_revenue = day_data['total_revenue'] or Decimal('0')
                 avg_price = day_data['avg_price'] or Decimal('0')
+                total_checkered = day_data.get('total_checkered', 0) or 0
                 
-                # Calculate occupancy rate
+                # Calculate occupancy rate: impressions/(total_seats - checkered)
+                # where impressions = reserved (they are the same)
                 occupancy_rate = None
-                if total_seats > 0:
-                    occupancy_rate = (float(total_reserved) / float(total_seats)) * 100
+                available = total_seats - total_checkered
+                if available > 0:
+                    occupancy_rate = (float(total_reserved) / float(available)) * 100
                 
-                # Calculate DBR from last_updates date (not just when DIR < 0)
-                # DBR represents when the data was last updated relative to release
+                # Calculate DBR from running_date
+                # DBR represents when the running date relative to release
                 dbr_value = None
-                if last_update_date:
-                    from datetime import datetime
-                    # Convert date to datetime for calculate_dbr
-                    last_updates_dt = datetime.combine(last_update_date, datetime.min.time())
-                    dbr_value = self.calculate_dbr(last_updates_dt, release_date_val)
+                if running_date_val:
+                    dbr_value = self.calculate_dbr(running_date_val, release_date_val)
                 
                 # Calculate DoD metrics by comparing with previous day
                 dod_revenue_change = None
@@ -342,7 +320,7 @@ class MoviePerformanceService:
                             dod_reserved_change = (reserved_diff / prev_day_perf.total_reserved_seats) * 100
                 
                 # Get or create performance record
-                # Note: We may have multiple records for same date_sh but different last_updates (different DBR)
+                # Note: We may have multiple records for same date_sh but different running_date (different DBR)
                 # For aggregation purposes, we'll use date_sh as primary key but track DBR separately
                 # If same date_sh has multiple DBR values, we'll combine them
                 
@@ -355,7 +333,7 @@ class MoviePerformanceService:
                 
                 if existing_perf:
                     # Update existing record, adding to totals if needed
-                    # If same date_sh has multiple last_updates dates, combine them
+                    # If same date_sh has multiple running_date dates, combine them
                     existing_perf.total_reserved_seats += total_reserved
                     existing_perf.total_impressions += total_reserved
                     existing_perf.total_revenue += total_revenue
@@ -469,35 +447,14 @@ class MoviePerformanceService:
                 cursor.execute("""
                     SELECT 
                         MIN(release_date) AS release_date,
-                        SUM(
-                            CASE 
-                                WHEN reserved IS NULL OR reserved < 0 THEN 0
-                                ELSE reserved
-                            END
-                        ) as total_reserved,
-                        SUM(
-                            CASE 
-                                WHEN reserved IS NULL OR reserved < 0 THEN 0
-                                WHEN price IS NULL OR price <= 0 THEN 0
-                                ELSE (price * reserved)
-                            END
-                        ) as total_revenue,
-                        AVG(
-                            CASE 
-                                WHEN price IS NULL OR price <= 0 THEN NULL
-                                ELSE price
-                            END
-                        ) as avg_price,
-                        SUM(
-                            COALESCE(actual_total_seats, 0)
-                        ) as total_seats
+                        SUM(reserved) as total_reserved,
+                        SUM(price * reserved) as total_revenue,
+                        AVG(price) as avg_price,
+                        SUM(total_seats) as total_seats,
+                        SUM(checkered) as total_checkered
                     FROM movies
                     WHERE UPPER(title) = UPPER(%s)
                     AND (date_sh - release_date) BETWEEN -1 AND 2
-                    AND price IS NOT NULL 
-                    AND price > 0
-                    AND reserved IS NOT NULL
-                    AND reserved >= 0
                 """, [title])
                 
                 row = cursor.fetchone()
@@ -509,14 +466,16 @@ class MoviePerformanceService:
                 total_revenue = Decimal(str(row[2] or 0))
                 avg_price = Decimal(str(row[3] or 0))
                 total_seats = int(row[4] or 0)
+                total_checkered = int(row[5] or 0)
                 
-                occupancy_rate = (float(total_reserved) / float(total_seats)) * 100 if total_seats > 0 else 0.0
+                available = total_seats - total_checkered
+                occupancy_rate = (float(total_reserved) / float(available)) * 100 if available > 0 else 0.0
                 
                 return {
                     'title': title,
                     'release_date': release_date,
                     'period': period_label,
-                    'dir_range': (-1, 2),  # SQL uses date_diff -1 to 2, which is DIR -1, 1, 2, 3
+                    'dir_range': (-1, 3),  # SQL uses date_diff -1 to 2, which is DIR -1, 1, 2, 3
                     'total_revenue': total_revenue,
                     'total_reserved_seats': total_reserved,
                     'total_impressions': total_reserved,
@@ -600,35 +559,16 @@ class MoviePerformanceService:
             with connection.cursor() as cursor:
                 cursor.execute("""
                     SELECT 
-                        SUM(
-                            CASE 
-                                WHEN reserved IS NULL OR reserved < 0 THEN 0
-                                ELSE reserved
-                            END
-                        ) as total_reserved,
-                        SUM(
-                            COALESCE(actual_total_seats, 0)
-                        ) as total_seats,
-                        SUM(
-                            CASE 
-                                WHEN reserved IS NULL OR reserved < 0 THEN 0
-                                WHEN price IS NULL OR price <= 0 THEN 0
-                                ELSE (price * reserved)
-                            END
-                        ) as total_revenue,
-                        AVG(
-                            CASE 
-                                WHEN price IS NULL OR price <= 0 THEN NULL
-                                ELSE price
-                            END
-                        ) as avg_price
+                        SUM(reserved) as total_reserved,
+                        SUM(total_seats) as total_seats,
+                        SUM(price * reserved) as total_revenue,
+                        AVG(price) as avg_price,
+                        SUM(checkered) as total_checkered
                     FROM movies
                     WHERE UPPER(title) = UPPER(%s)
                     AND release_date = %s
                     AND date_sh >= %s
                     AND date_sh <= %s
-                    AND price IS NOT NULL 
-                    AND price > 0
                 """, [title, release_date, start_date, end_date])
                 
                 row = cursor.fetchone()
@@ -637,14 +577,16 @@ class MoviePerformanceService:
                         'total_reserved': int(row[0] or 0),
                         'total_seats': int(row[1] or 0),
                         'total_revenue': Decimal(str(row[2] or 0)),
-                        'avg_price': Decimal(str(row[3] or 0))
+                        'avg_price': Decimal(str(row[3] or 0)),
+                        'total_checkered': int(row[4] or 0)
                     }
                 else:
                     results = {
                         'total_reserved': 0,
                         'total_seats': 0,
                         'total_revenue': Decimal('0'),
-                        'avg_price': Decimal('0')
+                        'avg_price': Decimal('0'),
+                        'total_checkered': 0
                     }
         except Exception as e:
             logger.warning(f"Database aggregation failed in fallback method: {e}. Using Python-level processing.")
@@ -653,30 +595,25 @@ class MoviePerformanceService:
                 title__iexact=title,
                 release_date=release_date,
                 date_sh__gte=start_date,
-                date_sh__lte=end_date,
-                price__isnull=False,
-                price__gt=0
-            ).values('reserved', 'price', 'actual_total_seats'))
+                date_sh__lte=end_date
+            ).values('reserved', 'price', 'total_seats', 'checkered'))
             
             total_revenue = Decimal('0')
             total_reserved = 0
             total_seats = 0
+            total_checkered = 0
             prices = []
             
             for record in records:
-                try:
-                    reserved_val = int(record['reserved']) if record['reserved'] is not None else 0
-                    if reserved_val < 0:
-                        reserved_val = 0
-                except (ValueError, TypeError):
-                    reserved_val = 0
-                
+                reserved_val = int(record['reserved']) if record['reserved'] is not None else 0
                 price_val = Decimal(str(record['price'])) if record['price'] else Decimal('0')
                 
                 total_revenue += price_val * Decimal(str(reserved_val))
                 total_reserved += reserved_val
-                total_seats += record.get('actual_total_seats', 0) or 0
-                prices.append(price_val)
+                total_seats += record.get('total_seats', 0) or 0
+                total_checkered += record.get('checkered', 0) or 0
+                if price_val:
+                    prices.append(price_val)
             
             avg_price = sum(prices) / len(prices) if prices else Decimal('0')
             
@@ -684,17 +621,20 @@ class MoviePerformanceService:
                 'total_revenue': total_revenue,
                 'total_reserved': total_reserved,
                 'total_seats': total_seats,
-                'avg_price': avg_price
+                'avg_price': avg_price,
+                'total_checkered': total_checkered
             }
         
         total_revenue = results['total_revenue'] or Decimal('0')
         total_reserved = results['total_reserved'] or 0
         total_seats = results['total_seats'] or 0
         avg_price = results['avg_price'] or Decimal('0')
+        total_checkered = results.get('total_checkered', 0) or 0
         
         occupancy_rate = None
-        if total_seats > 0:
-            occupancy_rate = (float(total_reserved) / float(total_seats)) * 100
+        available = total_seats - total_checkered
+        if available > 0:
+            occupancy_rate = (float(total_reserved) / float(available)) * 100
         
         return {
             'title': title,
@@ -788,34 +728,15 @@ class MoviePerformanceService:
                 with connection.cursor() as cursor:
                     cursor.execute("""
                         SELECT 
-                            SUM(
-                                CASE 
-                                    WHEN reserved IS NULL OR reserved < 0 THEN 0
-                                    ELSE reserved
-                                END
-                            ) as total_reserved,
-                            SUM(
-                                COALESCE(actual_total_seats, 0)
-                            ) as total_seats,
-                            SUM(
-                                CASE 
-                                    WHEN reserved IS NULL OR reserved < 0 THEN 0
-                                    WHEN price IS NULL OR price <= 0 THEN 0
-                                    ELSE (price * reserved)
-                                END
-                            ) as total_revenue,
-                            AVG(
-                                CASE 
-                                    WHEN price IS NULL OR price <= 0 THEN NULL
-                                    ELSE price
-                                END
-                            ) as avg_price
+                            SUM(reserved) as total_reserved,
+                            SUM(total_seats) as total_seats,
+                            SUM(price * reserved) as total_revenue,
+                            AVG(price) as avg_price,
+                            SUM(checkered) as total_checkered
                         FROM movies
                         WHERE UPPER(title) = UPPER(%s)
                         AND release_date = %s
                         AND date_sh = %s
-                        AND price IS NOT NULL 
-                        AND price > 0
                     """, [title, release_date, date_sh_val])
                     
                     row = cursor.fetchone()
@@ -824,14 +745,16 @@ class MoviePerformanceService:
                             'total_reserved': int(row[0] or 0),
                             'total_seats': int(row[1] or 0),
                             'total_revenue': Decimal(str(row[2] or 0)),
-                            'avg_price': Decimal(str(row[3] or 0))
+                            'avg_price': Decimal(str(row[3] or 0)),
+                            'total_checkered': int(row[4] or 0)
                         }
                     else:
                         daily_data = {
                             'total_reserved': 0,
                             'total_seats': 0,
                             'total_revenue': Decimal('0'),
-                            'avg_price': Decimal('0')
+                            'avg_price': Decimal('0'),
+                            'total_checkered': 0
                         }
             except Exception as e:
                 logger.warning(f"Day-by-day calculation failed: {e}")
@@ -839,17 +762,20 @@ class MoviePerformanceService:
                     'total_reserved': 0,
                     'total_seats': 0,
                     'total_revenue': Decimal('0'),
-                    'avg_price': Decimal('0')
+                    'avg_price': Decimal('0'),
+                    'total_checkered': 0
                 }
             
             total_revenue = daily_data['total_revenue'] or Decimal('0')
             total_reserved = daily_data['total_reserved'] or 0
             total_seats = daily_data['total_seats'] or 0
             avg_price = daily_data['avg_price'] or Decimal('0')
+            total_checkered = daily_data['total_checkered'] or 0
             
             occupancy_rate = None
-            if total_seats > 0:
-                occupancy_rate = (float(total_reserved) / float(total_seats)) * 100
+            available = total_seats - total_checkered
+            if available > 0:
+                occupancy_rate = (float(total_reserved) / float(available)) * 100
             
             results.append({
                 'dir_value': dir_val,
@@ -1013,7 +939,7 @@ class MoviePerformanceService:
     ) -> Dict[str, Any]:
         """
         Get advance booking data for a movie up to DBR threshold.
-        Uses raw Movie table for accurate DBR calculation since DBR varies by last_updates.
+        Uses raw Movie table for accurate DBR calculation since DBR varies by running_date.
         
         Args:
             title: Movie title
@@ -1027,7 +953,7 @@ class MoviePerformanceService:
         from django.db import connection
         
         # Query directly from Movie table to get accurate DBR-based aggregations
-        # DBR is calculated from last_updates, which varies per record
+        # DBR is calculated from running_date, which varies per record
         # SQL uses: DBR < 0 for "total advance reservations"
         # If threshold is 0, use < 0 (strictly less than, all advance bookings)
         # If threshold is negative, use <= threshold (less than or equal)
@@ -1041,53 +967,32 @@ class MoviePerformanceService:
                 cursor.execute("""
                     SELECT 
                         COALESCE(SUM(reserved), 0) as total_reserved,
-                        COALESCE(SUM(
-                            CASE 
-                                WHEN price IS NULL OR price <= 0 OR price::text ~ '^[^0-9]' THEN 0
-                                WHEN reserved IS NULL OR reserved < 0 THEN 0
-                                ELSE (CAST(REPLACE(price::text, '$', '') AS DECIMAL(10,2)) * reserved)
-                            END
-                        ), 0) as total_revenue
+                        COALESCE(SUM(price * reserved), 0) as total_revenue
                     FROM movies
                     WHERE UPPER(title) = UPPER(%s)
                     AND (
                         CASE 
-                            WHEN (last_updates::date - release_date) < 0 
-                            THEN (last_updates::date - release_date)
-                            WHEN (last_updates::date - release_date) >= 0 
-                            THEN (last_updates::date - release_date) + 1
+                            WHEN (running_date::date - release_date) < 0 
+                            THEN (running_date::date - release_date)
+                            WHEN (running_date::date - release_date) >= 0 
+                            THEN (running_date::date - release_date) + 1
                         END
                     ) < 0
                 """, [title])
             else:
-                # For specific DBR threshold, use filters for data quality
+                # For specific DBR threshold, no filters
                 cursor.execute(f"""
                     SELECT 
-                        SUM(
-                            CASE 
-                                WHEN reserved IS NULL OR reserved < 0 THEN 0
-                                ELSE reserved
-                            END
-                        ) as total_reserved,
-                        SUM(
-                            CASE 
-                                WHEN reserved IS NULL OR reserved < 0 THEN 0
-                                WHEN price IS NULL OR price <= 0 THEN 0
-                                ELSE (price * reserved)
-                            END
-                        ) as total_revenue
+                        SUM(reserved) as total_reserved,
+                        SUM(price * reserved) as total_revenue
                     FROM movies
                     WHERE UPPER(title) = UPPER(%s)
-                    AND price IS NOT NULL 
-                    AND price > 0
-                    AND reserved IS NOT NULL
-                    AND reserved >= 0
                     AND (
                         CASE 
-                            WHEN (last_updates::date - release_date) < 0 
-                            THEN (last_updates::date - release_date)
-                            WHEN (last_updates::date - release_date) >= 0 
-                            THEN (last_updates::date - release_date) + 1
+                            WHEN (running_date::date - release_date) < 0 
+                            THEN (running_date::date - release_date)
+                            WHEN (running_date::date - release_date) >= 0 
+                            THEN (running_date::date - release_date) + 1
                         END
                     ) {comparison_op} %s
                 """, [title, dbr_threshold])
@@ -1116,19 +1021,9 @@ class MoviePerformanceService:
                 SELECT
                     title,
                     MIN(release_date) AS release_date,
-                    ROUND(SUM(
-                        CASE 
-                            WHEN reserved IS NULL OR reserved < 0 THEN 0
-                            WHEN price IS NULL OR price <= 0 THEN 0
-                            ELSE (price * reserved)
-                        END
-                    ), 2) AS first_weekend_revenue
+                    ROUND(SUM(price * reserved), 2) AS first_weekend_revenue
                 FROM movies
                 WHERE (date_sh - release_date) BETWEEN -1 AND 2
-                AND price IS NOT NULL 
-                AND price > 0
-                AND reserved IS NOT NULL
-                AND reserved >= 0
                 GROUP BY title
                 ORDER BY first_weekend_revenue DESC
             """)
@@ -1163,64 +1058,84 @@ class MoviePerformanceService:
     
     def compare_dir_ranges(self, movie_title: str, dir_range1: Tuple[int, int], 
                          dir_range2: Tuple[int, int]) -> Dict[str, Any]:
-        """Compare performance between two DIR ranges for a movie."""
-        from django.db.models import Sum
+        """Compare performance between two DIR ranges for a movie using raw SQL for accuracy."""
+        from django.db import connection
         
-        release_date = (
-            MovieDailyPerformance.objects
-            .filter(title__iexact=movie_title)
-            .values_list('release_date', flat=True)
-            .distinct()
-            .first()
-        )
-        
-        if not release_date:
-            return {'error': 'Movie not found'}
-        
-        range1_data = (
-            MovieDailyPerformance.objects
-            .filter(
-                title__iexact=movie_title,
-                release_date=release_date,
-                dir_value__gte=dir_range1[0],
-                dir_value__lte=dir_range1[1]
-            )
-            .aggregate(
-                revenue=Sum('total_revenue'),
-                reserved=Sum('total_reserved_seats')
-            )
-        )
-        
-        range2_data = (
-            MovieDailyPerformance.objects
-            .filter(
-                title__iexact=movie_title,
-                release_date=release_date,
-                dir_value__gte=dir_range2[0],
-                dir_value__lte=dir_range2[1]
-            )
-            .aggregate(
-                revenue=Sum('total_revenue'),
-                reserved=Sum('total_reserved_seats')
-            )
-        )
-        
-        rev1 = range1_data['revenue'] or Decimal('0')
-        rev2 = range2_data['revenue'] or Decimal('0')
-        res1 = range1_data['reserved'] or 0
-        res2 = range2_data['reserved'] or 0
-        
-        diff = rev1 - rev2
-        diff_pct = (float(diff) / float(rev2)) * 100 if rev2 > 0 else 0
-        
-        return {
-            'range1_revenue': rev1,
-            'range1_reserved': res1,
-            'range2_revenue': rev2,
-            'range2_reserved': res2,
-            'revenue_difference': diff,
-            'revenue_difference_percent': diff_pct
-        }
+        with connection.cursor() as cursor:
+            # Use raw SQL to calculate DIR properly and get accurate revenue
+            cursor.execute("""
+                WITH dir_calc AS (
+                    SELECT title, release_date, date_sh, reserved, price
+                    FROM movies
+                    WHERE UPPER(title) = UPPER(%s)
+                ),
+                dir_with_calc AS (
+                    SELECT *,
+                    CASE
+                        WHEN (date_sh - release_date) < 0
+                        THEN (date_sh - release_date)
+                        WHEN (date_sh - release_date) >= 0
+                        THEN (date_sh - release_date) + 1
+                    END AS DIR
+                    FROM dir_calc
+                )
+                SELECT
+                    CASE
+                        WHEN DIR BETWEEN %s AND %s THEN 'range1'
+                        WHEN DIR BETWEEN %s AND %s THEN 'range2'
+                    END AS dir_range,
+                    SUM(price * reserved) AS revenue,
+                    SUM(reserved) AS reserved_seats
+                FROM dir_with_calc
+                WHERE DIR BETWEEN %s AND %s
+                    OR DIR BETWEEN %s AND %s
+                GROUP BY
+                    CASE
+                        WHEN DIR BETWEEN %s AND %s THEN 'range1'
+                        WHEN DIR BETWEEN %s AND %s THEN 'range2'
+                    END
+            """, [
+                movie_title,
+                dir_range1[0], dir_range1[1],  # Range 1 DIR boundaries
+                dir_range2[0], dir_range2[1],  # Range 2 DIR boundaries
+                dir_range1[0], dir_range1[1],  # WHERE range 1
+                dir_range2[0], dir_range2[1],  # WHERE range 2
+                dir_range1[0], dir_range1[1],  # GROUP BY range 1
+                dir_range2[0], dir_range2[1]   # GROUP BY range 2
+            ])
+            
+            columns = [col[0] for col in cursor.description]
+            rows = cursor.fetchall()
+            
+            if not rows:
+                return {'error': 'Movie not found'}
+            
+            # Parse results
+            rev1 = Decimal('0')
+            rev2 = Decimal('0')
+            res1 = 0
+            res2 = 0
+            
+            for row in rows:
+                row_dict = dict(zip(columns, row))
+                if row_dict['dir_range'] == 'range1':
+                    rev1 = Decimal(str(row_dict['revenue'] or 0))
+                    res1 = int(row_dict['reserved_seats'] or 0)
+                elif row_dict['dir_range'] == 'range2':
+                    rev2 = Decimal(str(row_dict['revenue'] or 0))
+                    res2 = int(row_dict['reserved_seats'] or 0)
+            
+            diff = rev1 - rev2
+            diff_pct = (float(diff) / float(rev2)) * 100 if rev2 > 0 else 0
+            
+            return {
+                'range1_revenue': rev1,
+                'range1_reserved': res1,
+                'range2_revenue': rev2,
+                'range2_reserved': res2,
+                'revenue_difference': diff,
+                'revenue_difference_percent': diff_pct
+            }
     
     def get_highest_advance_booking(self, dbr_threshold: int = -7) -> Dict[str, Any]:
         """
@@ -1234,30 +1149,15 @@ class MoviePerformanceService:
                 SELECT 
                     title, 
                     MIN(release_date) AS release_date,
-                    SUM(
-                        CASE 
-                            WHEN reserved IS NULL OR reserved < 0 THEN 0
-                            ELSE reserved
-                        END
-                    ) AS total_advance_bookings,
-                    SUM(
-                        CASE 
-                            WHEN reserved IS NULL OR reserved < 0 THEN 0
-                            WHEN price IS NULL OR price <= 0 THEN 0
-                            ELSE (price * reserved)
-                        END
-                    ) AS total_advance_revenue
+                    SUM(reserved) AS total_advance_bookings,
+                    SUM(price * reserved) AS total_advance_revenue
                 FROM movies
-                WHERE price IS NOT NULL 
-                AND price > 0
-                AND reserved IS NOT NULL
-                AND reserved >= 0
-                AND (
+                WHERE (
                     CASE 
-                        WHEN (last_updates::date - release_date) < 0 
-                        THEN (last_updates::date - release_date)
-                        WHEN (last_updates::date - release_date) >= 0 
-                        THEN (last_updates::date - release_date) + 1
+                        WHEN (running_date::date - release_date) < 0 
+                        THEN (running_date::date - release_date)
+                        WHEN (running_date::date - release_date) >= 0 
+                        THEN (running_date::date - release_date) + 1
                     END
                 ) < %s
                 GROUP BY title
@@ -1295,10 +1195,10 @@ class MoviePerformanceService:
                     SELECT 
                         title,
                         release_date,
-                        last_updates,
+                        running_date,
                         reserved,
                         price,
-                        actual_total_seats,
+                        total_seats,
                         date_sh
                     FROM movies
                     WHERE UPPER(title) = UPPER(%s)
@@ -1306,16 +1206,16 @@ class MoviePerformanceService:
                     SELECT 
                         title,
                         release_date,
-                        last_updates,
+                        running_date,
                         reserved,
                         price,
-                        actual_total_seats,
+                        total_seats,
                         date_sh,
                         CASE 
-                            WHEN (last_updates::date - release_date) < 0 THEN (last_updates::date - release_date)
-                            WHEN (last_updates::date - release_date) >= 0 THEN (last_updates::date - release_date) + 1
+                            WHEN (running_date::date - release_date) < 0 THEN (running_date::date - release_date)
+                            WHEN (running_date::date - release_date) >= 0 THEN (running_date::date - release_date) + 1
                         END AS DBR,
-                        (COALESCE(reserved, 0) * CAST(REPLACE(COALESCE(price::text, '0'), '$', '') AS DECIMAL(10,2))) AS revenue
+                        (COALESCE(reserved, 0) * COALESCE(price, 0)) AS revenue
                     FROM movie_data
                 ), filtered_dbr AS (
                     SELECT 
@@ -1323,7 +1223,7 @@ class MoviePerformanceService:
                         DBR,
                         SUM(COALESCE(reserved, 0)) AS daily_reserved,
                         SUM(COALESCE(revenue, 0)) AS daily_revenue,
-                        SUM(COALESCE(actual_total_seats, 0)) AS daily_total_seats
+                        SUM(COALESCE(total_seats, 0)) AS daily_total_seats
                     FROM dbr_calculation
                     WHERE DBR BETWEEN %s AND %s
                       AND (date_sh - release_date) <= 2

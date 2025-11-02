@@ -79,9 +79,11 @@ class Movie(models.Model):
         return f"{self.title} at {self.theater_name} ({self.date_sh} {self.time_sh})"
         
     def get_occupancy_rate(self):
-        """Calculate the current occupancy rate"""
-        if self.total_seats > 0:
-            return (self.reserved / self.total_seats) * 100
+        """Calculate the current occupancy rate: impressions/available where impressions = reserved and available = total_seats - checkered"""
+        if self.total_seats and self.checkered is not None:
+            available = self.total_seats - self.checkered
+            if available > 0:
+                return (self.reserved / available) * 100
         return 0
         
     def get_actual_occupancy_rate(self):

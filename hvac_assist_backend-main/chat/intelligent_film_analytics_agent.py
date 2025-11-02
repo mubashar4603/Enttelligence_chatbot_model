@@ -4015,16 +4015,16 @@ If you implement these changes, you could potentially increase total revenue by 
             if movie_titles:
                 movie_title = movie_titles[0]  # Use first movie found
                 
-                # Calculate average occupancy rate using the formula: (reserved * 100.0) / actual_total_seats
+                # Calculate average occupancy rate using the formula: impressions/available where available = total_seats - checkered
                 from django.db.models import Avg, Case, When, FloatField
                 from django.db import connection
                 
                 # Use raw SQL to calculate occupancy rate properly
                 with connection.cursor() as cursor:
                     cursor.execute("""
-                        SELECT AVG((reserved * 100.0) / actual_total_seats) AS occupancy_rate 
+                        SELECT AVG((reserved * 100.0) / (total_seats - checkered)) AS occupancy_rate 
                         FROM movies 
-                        WHERE actual_total_seats > 0 
+                        WHERE (total_seats - checkered) > 0 
                         AND title ILIKE %s
                     """, [f'%{movie_title}%'])
                     
@@ -4036,7 +4036,7 @@ If you implement these changes, you could potentially increase total revenue by 
                     response = f"**Average Seat Occupancy Rate for {movie_title}:**\n\n"
                     response += f"• **Average Occupancy Rate**: {occupancy_rate:.6f}%\n"
                     response += f"• **Movie**: {movie_title}\n"
-                    response += f"• **Calculation**: (Reserved × 100) ÷ Actual Total Seats\n"
+                    response += f"• **Calculation**: (Reserved × 100) ÷ (Total Seats - Checkered)\n"
                     
                     return {
                         'type': 'occupancy_rate_analysis',
@@ -4044,7 +4044,7 @@ If you implement these changes, you could potentially increase total revenue by 
                         'data': {
                             'movie_title': movie_title,
                             'occupancy_rate': occupancy_rate,
-                            'calculation_formula': '(reserved * 100.0) / actual_total_seats'
+                            'calculation_formula': '(reserved * 100.0) / (total_seats - checkered)'
                         },
                         'sources': None,
                         'retrieved_count': 1,
