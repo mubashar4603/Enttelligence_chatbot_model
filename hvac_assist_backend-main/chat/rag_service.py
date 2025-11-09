@@ -447,11 +447,15 @@ class MovieRAGService:
         detection_base = {'original_query': query}
         
         # Pattern 0: Best comp titles (check FIRST before other patterns)
-        # "What are the best comp titles?"
-        # "Show me best performing movies"
+        # "What are the best comp titles?" (WITHOUT specific movie)
+        # "Show me best performing movies" (WITHOUT specific movie)
         if re.search(r'(?:what|which|show).*?(?:best|top|highest).*?(?:comp\s+titles?|performing.*?movies?)', query_lower):
-            detection_base['type'] = 'best_comp_titles'
-            return detection_base
+            # Only match if NO specific movie is mentioned in the query
+            # This allows "best comp titles of Twisters" to fall through to intelligent_agent
+            movies_in_query = re.search(r'(?:for|of)\s+(\w+)', query_lower)
+            if not movies_in_query:
+                detection_base['type'] = 'best_comp_titles'
+                return detection_base
         
         # Pattern 1: Compare all movies first weekend
         # "Compare the first weekend revenue performance for all movies"
@@ -664,95 +668,60 @@ class MovieRAGService:
                         'data': None
                     }
                 
-                # Format response with natural language explanations
+                # Get day-by-day trend for detailed analysis
                 from decimal import Decimal
+                trend_data = self.performance_service.get_day_by_day_trend(
+                    movie_title, start_dir=-1, end_dir=14, use_cache=True
+                )
+                
                 revenue = float(perf_data['total_revenue'])
                 reserved = int(perf_data['total_reserved_seats'])
                 impressions = int(perf_data['total_impressions'])
                 avg_price = float(perf_data['avg_price'])
                 occupancy = float(perf_data['avg_occupancy_rate'])
-                
-                # Context about first weekend performance
                 period_name = period.replace('_', ' ').title()
                 dir_start, dir_end = perf_data['dir_range']
                 
-                answer_parts = [
-                    f"**{movie_title} - {period_name} Performance (DIR {dir_start} to DIR {dir_end}):**\n\n"
+                # Format data for LLM
+                data_context_parts = [
+                    f"Movie: {movie_title}",
+                    f"Period: {period_name} (DIR {dir_start} to {dir_end})",
+                    f"\nPerformance Metrics:",
+                    f"- Total Revenue: ${revenue:,.2f}",
+                    f"- Total Reserved Seats: {reserved:,}",
+                    f"- Total Impressions: {impressions:,}",
+                    f"- Average Price: ${avg_price:,.2f}",
+                    f"- Average Occupancy Rate: {occupancy:.1f}%",
                 ]
                 
-                # Add intro explanation
-                if period == 'first_weekend':
-                    answer_parts.append(
-                        f"The first weekend represents the critical opening period of a film's theatrical release, "
-                        f"spanning from the day before release (DIR -1) through the third day after release (DIR 3). "
-                        f"This period sets the tone for the movie's box office trajectory and audience reception.\n"
-                    )
+                # Add day-by-day data if available
+                if trend_data:
+                    data_context_parts.append(f"\nDay-by-Day Performance Trend:")
+                    for day in trend_data[:14]:  # First 14 days
+                        dir_val = day['dir_value']
+                        day_revenue = day['total_revenue']
+                        day_reserved = day['total_reserved_seats']
+                        dod_change = day.get('dod_revenue_change')
+                        
+                        dod_str = ""
+                        if dod_change is not None:
+                            sign = "+" if dod_change >= 0 else ""
+                            dod_str = f" (DoD: {sign}{dod_change:.1f}%)"
+                        
+                        data_context_parts.append(
+                            f"- DIR {dir_val}: ${day_revenue:,.2f} revenue, {day_reserved:,} seats{dod_str}"
+                        )
                 
-                # Performance metrics with context
-                answer_parts.append("**Performance Metrics:**\n")
-                answer_parts.append(f"• **Total Revenue**: ${revenue:,.2f}\n")
+                data_context = "\n".join(data_context_parts)
                 
-                # Add revenue context
-                if revenue >= 50000000:
-                    revenue_quality = "exceptional"
-                    revenue_note = "demonstrating blockbuster-level performance"
-                elif revenue >= 30000000:
-                    revenue_quality = "strong"
-                    revenue_note = "indicating solid audience interest"
-                elif revenue >= 15000000:
-                    revenue_quality = "moderate"
-                    revenue_note = "showing decent market reception"
-                else:
-                    revenue_quality = "developing"
-                    revenue_note = "suggesting niche audience appeal"
-                
-                answer_parts.append(
-                    f"   This represents a {revenue_quality} opening, {revenue_note}.\n"
-                )
-                
-                answer_parts.append(
-                    f"• **Total Reserved Seats**: {reserved:,}\n"
-                    f"   This indicates the total number of tickets sold during the first weekend.\n"
-                    f"• **Total Impressions**: {impressions:,}\n"
-                    f"   Each impression represents a ticket sold, showing the total audience reach.\n"
-                    f"• **Average Price**: ${avg_price:,.2f}\n"
-                )
-                
-                # Price context
-                if avg_price >= 15:
-                    price_note = "premium pricing, likely includes IMAX, 3D, or premium format screenings"
-                elif avg_price >= 12:
-                    price_note = "standard market pricing"
-                else:
-                    price_note = "value-oriented pricing, may include matinee or discount screenings"
-                
-                answer_parts.append(f"   {price_note.capitalize()}.\n")
-                answer_parts.append(f"• **Average Occupancy Rate**: {occupancy:.1f}%\n")
-                
-                # Occupancy context
-                if occupancy >= 80:
-                    occupancy_note = "exceptional demand, theaters operating near capacity"
-                elif occupancy >= 50:
-                    occupancy_note = "strong demand, healthy audience turnout"
-                elif occupancy >= 25:
-                    occupancy_note = "moderate demand, typical for first weekend"
-                else:
-                    occupancy_note = "lower demand, may indicate limited market appeal or wide release strategy"
-                
-                answer_parts.append(f"   {occupancy_note.capitalize()}.\n")
-                
-                # Overall assessment
-                answer_parts.append(
-                    f"\n**Assessment:**\n"
-                    f"With ${revenue:,.2f} in first weekend revenue and {reserved:,} tickets sold, "
-                    f"**{movie_title}** shows {'strong' if revenue >= 30000000 else 'moderate' if revenue >= 15000000 else 'developing'} "
-                    f"opening performance. The {occupancy:.1f}% occupancy rate indicates "
-                    f"{'excellent' if occupancy >= 50 else 'adequate' if occupancy >= 25 else 'potential for improvement'} "
-                    f"theater utilization."
+                # Generate LLM response
+                answer = self._generate_performance_ai_response(
+                    detection.get('original_query', query_type),
+                    data_context
                 )
                 
                 return {
-                    'answer': "\n".join(answer_parts),
+                    'answer': answer,
                     'data': perf_data,
                     'query_type': 'performance_analytics'
                 }
@@ -1578,6 +1547,68 @@ Please try your question again, and I'll do my best to assist you with comprehen
             logger.error(f"❌ Query failed: {e}")
             raise
 
+    def _generate_performance_ai_response(self, query: str, data_context: str) -> str:
+        """Generate LLM response for performance analytics queries"""
+        try:
+            if not self.llm:
+                return "I'm unable to generate analytics insights at the moment."
+            
+            # Create Llama3-optimized prompt for performance analytics
+            system_prompt = """You are Entelligence AI Assistant, a specialized film analytics expert. You provide insightful, data-driven analysis based on performance metrics.
+
+CRITICAL RULES:
+1. ALWAYS base your analysis on the data provided
+2. PROVIDE detailed explanations of WHY performance is happening based on patterns
+3. MAKE PROJECTIONS based on historical trends when you have day-by-day data
+4. COMPARE movies objectively using provided metrics
+5. EXPLAIN patterns and trends naturally and conversationally
+6. USE specific numbers to support all conclusions
+7. If data is insufficient, explain what's missing and what you can infer
+
+Your expertise includes:
+- Performance Analysis: Detailed explanations of why movies are performing well/poorly
+- Projections: Forward-looking estimates based on daily trends
+- Comparative Analysis: Objective comparisons between movies
+- Pattern Recognition: Identifying trends in daily/weekly patterns
+- Insights: Actionable insights about movie performance"""
+
+            prompt_template = """<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+
+{system_prompt}<|eot_id|><|start_header_id|>user<|end_header_id|>
+
+User Query: "{query}"
+
+Available Data:
+{data_context}
+
+Instructions:
+1. Analyze the data thoroughly and provide detailed insights
+2. Explain WHY the movie is performing this way based on the metrics
+3. If day-by-day data is provided, explain patterns (accelerating, decelerating, stable, etc.)
+4. Make projections about future performance if you have historical trends
+5. Compare performance objectively when multiple movies are mentioned
+6. Write naturally and conversationally, as if explaining to a colleague
+7. Use specific numbers from the data to support all points<|eot_id|><|start_header_id|>assistant<|end_header_id|>
+
+"""
+
+            full_prompt = prompt_template.format(
+                system_prompt=system_prompt,
+                query=query,
+                data_context=data_context
+            )
+            
+            # Generate response using LLM
+            self.streaming_handler.reset()
+            self.llm.invoke(full_prompt)
+            response = self.streaming_handler.get_response()
+            
+            return response.strip()
+            
+        except Exception as e:
+            logger.error(f"⚠️ LLM performance response generation failed: {e}")
+            return "I encountered an issue generating analytics insights. Please try again."
+    
     def health_check(self):
         
         status = {

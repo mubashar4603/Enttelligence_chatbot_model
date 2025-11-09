@@ -380,12 +380,20 @@ class MovieDailyPerformance(models.Model):
     Pre-calculated daily performance metrics for movies based on DIR (Days In Release).
     This model stores aggregated daily data for fast querying of performance analytics.
     
-    DIR Calculation (as per SQL logic):
-    - If DATEDIFF(date_sh, release_date) < 0: DIR = DATEDIFF(date_sh, release_date)
-    - If DATEDIFF(date_sh, release_date) >= 0: DIR = DATEDIFF(date_sh, release_date) + 1
+    DIR Calculation Formula:
+    If (date_sh < release_date):
+        DIR = date_sh - release_date  # negative values (before release)
+    
+    If (date_sh >= release_date):
+        DIR = date_sh - release_date + 1  # starting from DIR = 1 on release day
+    
+    Examples:
+    - One day BEFORE release: release_date = July 20, date_sh = July 19 → DIR = -1
+    - Opening day (release day): release_date = July 20, date_sh = July 20 → DIR = 1
+    - One day AFTER release: release_date = July 20, date_sh = July 21 → DIR = 2
     
     This enables fast queries for:
-    - First weekend performance (DIR -1 to DIR 3)
+    - First weekend performance (DIR -1 to DIR 2)
     - Day-over-Day growth analysis
     - Weekly comparisons
     - Advance booking analysis (DBR - Days Before Release)
