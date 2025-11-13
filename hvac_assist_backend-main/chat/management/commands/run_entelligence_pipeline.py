@@ -42,6 +42,12 @@ class Command(BaseCommand):
             default=512,
             help='Embedding batch size (parallel mode only, default: 512)',
         )
+        parser.add_argument(
+            '--csv-path',
+            type=str,
+            default=None,
+            help='Path to CSV file. If provided, only processes movies from this CSV (not existing database records)',
+        )
 
     def handle(self, *args, **options):
         if options['parallel']:
@@ -60,9 +66,15 @@ class Command(BaseCommand):
             )
         
         try:
+            csv_path = options.get('csv_path')
+            if csv_path:
+                self.stdout.write(
+                    self.style.SUCCESS(f'📁 Processing only movies from CSV: {csv_path}')
+                )
+            
             if options['parallel']:
                 # Initialize thread-based parallel pipeline
-                pipeline = ThreadBasedParallelSystem()
+                pipeline = ThreadBasedParallelSystem(csv_path=csv_path)
                 
                 # Update configuration based on arguments
                 if options['chunk_size']:
@@ -86,7 +98,7 @@ class Command(BaseCommand):
                 )
             else:
                 # Initialize precision pipeline
-                pipeline = PrecisionEntelligenceSystem()
+                pipeline = PrecisionEntelligenceSystem(csv_path=csv_path)
                 
                 # Update chunk size if provided
                 if options['chunk_size']:

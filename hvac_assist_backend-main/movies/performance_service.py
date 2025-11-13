@@ -9,6 +9,8 @@ Designed to handle millions of records efficiently using:
 import logging
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+import math
+from statistics import median
 from typing import Dict, List, Any, Optional, Tuple
 from django.db.models import (
     Sum, Count, Avg, Max, Min, Q, F, DecimalField, ExpressionWrapper,
@@ -185,6 +187,7 @@ class MoviePerformanceService:
         logger.info(f"📊 Processing {total_movies} distinct (title, release_date) combinations...")
         
         created_count = 0
+        total_records_after_processing = {}
         
         for idx, movie_info in enumerate(movies, 1):
             if idx % 100 == 0:
@@ -192,12 +195,49 @@ class MoviePerformanceService:
             
             title_str = movie_info['title']
             release_date_val = movie_info['release_date']
+            movie_created_count = 0
+            records_filtered_out = 0
+            records_processed = 0
             
             # Get all records for this movie
             movie_records = Movie.objects.filter(
                 title__iexact=title_str,
                 release_date=release_date_val
             )
+            total_movie_records = movie_records.count()
+            
+            # Debug: Show date ranges for first movie
+            if idx == 1 and total_movie_records > 0:
+                from django.db.models import Min, Max
+                date_range = movie_records.aggregate(
+                    min_date_sh=Min('date_sh'),
+                    max_date_sh=Max('date_sh'),
+                    min_running_date=Min('running_date'),
+                    max_running_date=Max('running_date')
+                )
+                logger.info(f"   📅 Date ranges for '{title_str}':")
+                logger.info(f"      release_date: {release_date_val}")
+                logger.info(f"      date_sh range: {date_range['min_date_sh']} to {date_range['max_date_sh']}")
+                logger.info(f"      running_date range: {date_range['min_running_date']} to {date_range['max_running_date']}")
+                days_before = (release_date_val - date_range['max_date_sh']).days if date_range['max_date_sh'] < release_date_val else 0
+                days_after = (date_range['min_date_sh'] - release_date_val).days if date_range['min_date_sh'] > release_date_val else 0
+                logger.info(f"      Days before release (max date_sh): {days_before}")
+                logger.info(f"      Days after release (min date_sh): {days_after}")
+                
+                # Check if release_date seems wrong based on date_sh values
+                if days_after > 30:
+                    # Release date is more than 30 days before the earliest show date - likely wrong
+                    logger.error(f"   ❌ POTENTIAL DATA ISSUE: release_date ({release_date_val}) is {days_after} days before earliest show date ({date_range['min_date_sh']})")
+                    logger.error(f"      This suggests the release_date in the database may be incorrect!")
+                    logger.error(f"      Expected release_date should be closer to the show dates (likely around {date_range['min_date_sh']} or a few days before)")
+                    logger.error(f"      To fix: UPDATE movies SET release_date = '2025-12-05' WHERE title = '{title_str}' AND release_date = '{release_date_val}'")
+                elif days_before < 0:
+                    # Show dates are before release date - might be presales
+                    if days_before < -50:
+                        logger.warning(f"   ⚠️  All show dates are {abs(days_before)} days before release_date - these are presales records")
+                elif days_after >= 0 and days_after <= 2:
+                    # Dates look reasonable for first weekend
+                    logger.info(f"   ✅ Date ranges look correct for first weekend (DIR -1, 1, 2)")
             
             # Aggregate by date_sh AND running_date for accurate DBR calculation
             # DBR is calculated from running_date, so we need to group by both
@@ -292,6 +332,19 @@ class MoviePerformanceService:
                         'total_checkered': daily_data['total_checkered']
                     })
             
+            # Debug: Show sample dates for first few aggregated records
+            if idx == 1 and len(aggregate_list) > 0:
+                logger.info(f"   🔍 Debug: Release date = {release_date_val}")
+                logger.info(f"   🔍 Sample date_sh values and DIR calculations (first 10):")
+                for i, sample_data in enumerate(aggregate_list[:10]):
+                    sample_date_sh = sample_data['date_sh']
+                    sample_running = sample_data.get('running_date_val')
+                    sample_dir = self.calculate_dir(sample_date_sh, release_date_val)
+                    sample_dbr = None
+                    if sample_running:
+                        sample_dbr = self.calculate_dbr(sample_running, release_date_val)
+                    logger.info(f"      [{i+1}] date_sh={sample_date_sh}, running_date={sample_running}, DIR={sample_dir}, DBR={sample_dbr}, days_from_release={(sample_date_sh - release_date_val).days}")
+            
             for day_data in aggregate_list:
                 date_sh_val = day_data['date_sh']
                 running_date_val = day_data.get('running_date_val')
@@ -322,7 +375,10 @@ class MoviePerformanceService:
                 # - DBR is valid (presales, date_sh < release_date)
                 if not dir_valid and not dbr_valid:
                     # Skip records that don't meet either constraint
+                    records_filtered_out += 1
                     continue
+                
+                records_processed += 1
                 
                 total_reserved = day_data['total_reserved'] or 0
                 total_seats = day_data['total_seats'] or 0
@@ -408,21 +464,43 @@ class MoviePerformanceService:
                 
                 if created:
                     created_count += 1
+                    movie_created_count += 1
             
             # Calculate cumulative metrics in a separate efficient query
             self._update_cumulative_metrics(title_str, release_date_val)
-        
-        # Calculate total records for this movie
-        total_records = 0
-        if title_str:
-            total_records = MovieDailyPerformance.objects.filter(
+            
+            # Calculate total records for this specific movie
+            movie_total_records = MovieDailyPerformance.objects.filter(
                 title__iexact=title_str,
                 release_date=release_date_val
             ).count()
-        else:
-            total_records = MovieDailyPerformance.objects.count()
+            total_records_after_processing[(title_str, release_date_val)] = movie_total_records
+            
+            logger.info(f"✅ Created {movie_created_count} new records, {movie_total_records} total records for '{title_str}' ({release_date_val})")
+            if records_filtered_out > 0:
+                logger.info(f"   📋 Summary: {total_movie_records} movie records found, {records_processed} passed DIR/DBR filters, {records_filtered_out} filtered out")
+                if movie_total_records == 0 and records_filtered_out > 0:
+                    logger.warning(f"   ⚠️  All records filtered out! This movie's dates don't meet DIR [-1,1,2] or valid DBR constraints.")
         
-        logger.info(f"✅ Created {created_count} new records, {total_records} total records for this movie")
+        # Calculate total records
+        if title:
+            # For specific movie query, return the count for the last movie processed
+            if total_records_after_processing:
+                # Get the last entry (should be the only one for a single title query)
+                final_total = list(total_records_after_processing.values())[-1] if total_records_after_processing else 0
+            else:
+                final_total = 0
+        else:
+            # For all movies, return total count
+            final_total = MovieDailyPerformance.objects.count()
+        
+        # Show warning if no records created for a specific movie query
+        if title and final_total == 0 and created_count == 0:
+            logger.warning(f"⚠️  No performance records created for '{title}'. Possible reasons:")
+            logger.warning(f"   - Movie records don't have date_sh values with DIR in [-1, 1, 2] (first weekend)")
+            logger.warning(f"   - Movie records don't have valid DBR (presales: running_date < release_date, date_sh < release_date)")
+            logger.warning(f"   - All records may already exist (updates don't count as 'created')")
+        
         return created_count
     
     @transaction.atomic
@@ -736,12 +814,51 @@ class MoviePerformanceService:
             'avg_occupancy_rate': occupancy_rate or 0.0,
         }
     
+    def _get_canonical_release_date(self, title: str) -> Optional[date]:
+        """
+        Determine the primary release date for a title.
+        Prefers the release with the highest first weekend revenue (DIR -1, 1, 2).
+        Falls back to the earliest release date if first weekend data is missing.
+        """
+        release_dates = list(
+            Movie.objects
+            .filter(title__iexact=title)
+            .values_list('release_date', flat=True)
+            .distinct()
+        )
+        
+        release_dates = sorted([rd for rd in release_dates if rd])
+        if not release_dates:
+            return None
+        
+        fw_totals = (
+            MovieDailyPerformance.objects
+            .filter(
+                title__iexact=title,
+                release_date__in=release_dates,
+                dir_value__in=[-1, 1, 2]
+            )
+            .values('release_date')
+            .annotate(total=Sum('total_revenue'))
+        )
+        
+        totals_map = {row['release_date']: row['total'] or Decimal('0') for row in fw_totals}
+        if totals_map:
+            max_total = max(totals_map.values())
+            if max_total > 0:
+                candidates = [rd for rd in release_dates if totals_map.get(rd, Decimal('0')) == max_total]
+                if candidates:
+                    return min(candidates)
+        
+        return release_dates[0]
+    
     def get_day_by_day_trend(
         self,
         title: str,
         start_dir: Optional[int] = None,
         end_dir: Optional[int] = None,
-        use_cache: bool = True
+        use_cache: bool = True,
+        release_date: Optional[date] = None
     ) -> List[Dict[str, Any]]:
         """
         Get day-by-day performance trend for a movie.
@@ -760,6 +877,11 @@ class MoviePerformanceService:
         if end_dir is None:
             end_dir = 2
         
+        if release_date is None:
+            release_date = self._get_canonical_release_date(title)
+        if not release_date:
+            return []
+        
         if use_cache:
             # Apply DIR constraint: First weekend uses DIR values -1, 1, 2
             # DIR = date_sh - release_date (if date_sh < release_date) or date_sh - release_date + 1 (if date_sh >= release_date)
@@ -767,6 +889,7 @@ class MoviePerformanceService:
                 MovieDailyPerformance.objects
                 .filter(
                     title__iexact=title,
+                    release_date=release_date,
                     dir_value__in=[-1, 1, 2]  # Constraint: DIR -1, 1, 2 (first weekend)
                 )
                 .filter(
@@ -789,14 +912,15 @@ class MoviePerformanceService:
             return list(performances)
         else:
             # Calculate from raw data
-            return self._calculate_day_by_day_from_raw(title, start_dir, end_dir)
+            return self._calculate_day_by_day_from_raw(title, start_dir, end_dir, release_date)
     
     def get_day_by_day_dbr_trend(
         self,
         title: str,
         start_dbr: Optional[int] = None,
         end_dbr: Optional[int] = None,
-        use_cache: bool = True
+        use_cache: bool = True,
+        release_date: Optional[date] = None
     ) -> List[Dict[str, Any]]:
         """
         Get day-by-day presales trend for a movie based on DBR (Days Before Release).
@@ -812,12 +936,12 @@ class MoviePerformanceService:
         Returns:
             List of daily presales dictionaries, ordered from maximum negative DBR to minimum negative DBR
         """
+        if release_date is None:
+            release_date = self._get_canonical_release_date(title)
+        if not release_date:
+            return []
+        
         if use_cache:
-            # Get movie release date for filtering presales data
-            movie = Movie.objects.filter(title__iexact=title).first()
-            if not movie:
-                return []
-            release_date = movie.release_date
             
             # First, find the actual DBR range available for this movie
             # IMPORTANT: Only presales data (DBR < 0 and date_sh < release_date)
@@ -825,6 +949,7 @@ class MoviePerformanceService:
                 MovieDailyPerformance.objects
                 .filter(
                     title__iexact=title, 
+                    release_date=release_date,
                     dbr_value__isnull=False,
                     dbr_value__lt=0,  # Only presales (DBR must be negative)
                     date_sh__lt=release_date  # Only records before release date
@@ -855,6 +980,7 @@ class MoviePerformanceService:
                 MovieDailyPerformance.objects
                 .filter(
                     title__iexact=title,
+                    release_date=release_date,
                     dbr_value__isnull=False,
                     dbr_value__gte=actual_start_dbr,  # More negative (e.g., -60)
                     dbr_value__lte=actual_end_dbr,  # Less negative (e.g., -1), but must be negative
@@ -885,7 +1011,7 @@ class MoviePerformanceService:
                 end_dbr = -1
             
             try:
-                result = self.get_cumulative_advance_booking(title, start_dbr, end_dbr)
+                result = self.get_cumulative_advance_booking(title, start_dbr, end_dbr, release_date)
                 if 'error' in result:
                     return []
                 return result.get('daily_data', [])
@@ -897,16 +1023,12 @@ class MoviePerformanceService:
         self,
         title: str,
         start_dir: int,
-        end_dir: int
+        end_dir: int,
+        release_date: Optional[date] = None
     ) -> List[Dict[str, Any]]:
         """Calculate day-by-day from raw Movie table."""
-        release_date = (
-            Movie.objects
-            .filter(title__iexact=title)
-            .values_list('release_date', flat=True)
-            .first()
-        )
-        
+        if release_date is None:
+            release_date = self._get_canonical_release_date(title)
         if not release_date:
             return []
         
@@ -1384,8 +1506,13 @@ class MoviePerformanceService:
             'total_advance_revenue': Decimal(str(result.get('total_advance_revenue') or 0))
         }
     
-    def get_cumulative_advance_booking(self, movie_title: str, dbr_start: int, 
-                                      dbr_end: int) -> Dict[str, Any]:
+    def get_cumulative_advance_booking(
+        self,
+        movie_title: str,
+        dbr_start: int,
+        dbr_end: int,
+        release_date: Optional[date] = None
+    ) -> Dict[str, Any]:
         """
         Get cumulative advance booking sales for a movie in DBR range.
         Uses raw SQL matching the user's ground-truth SQL with windowed cumulative sums.
@@ -1394,8 +1521,15 @@ class MoviePerformanceService:
         from datetime import datetime
         
         # Query directly from Movie table grouped by DBR
+        release_filter_sql = ""
+        params: List[Any] = [movie_title]
+        if release_date is not None:
+            release_filter_sql = " AND release_date = %s"
+            params.append(release_date)
+        params.extend([dbr_start, dbr_end])
+        
         with connection.cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(f"""
                 WITH movie_data AS (
                     SELECT 
                         title,
@@ -1406,7 +1540,7 @@ class MoviePerformanceService:
                         total_seats,
                         date_sh
                     FROM movies
-                    WHERE UPPER(title) = UPPER(%s)
+                    WHERE UPPER(title) = UPPER(%s){release_filter_sql}
                 ), dbr_calculation AS (
                     SELECT 
                         title,
@@ -1455,7 +1589,7 @@ class MoviePerformanceService:
                     cumulative_revenue
                 FROM cumulative_sales
                 ORDER BY DBR
-            """, [movie_title, dbr_start, dbr_end])
+            """, params)
             
             daily_data_raw = cursor.fetchall()
             
@@ -1533,173 +1667,277 @@ class MoviePerformanceService:
         self,
         target_title: str,
         limit: Optional[int] = None,
-        min_correlation: float = 0.80,
-        dbr_end: int = -1
-    ) -> List[Dict[str, Any]]:
+        min_correlation: float = 0.50,  # Lowered from 0.85 to 0.50 for growth rate similarity
+        dbr_end: int = 2,
+        min_dbr_overlap_ratio: float = 0.60,
+        min_revenue_ratio: float = 0.3,
+        max_revenue_ratio: float = 3.0
+    ) -> Dict[str, Any]:
         """
-        Find best comparable titles based on cumulative presales trajectory similarity.
+        Analyze trajectory-based comp titles between the target movie and all other candidates.
         
-        This method analyzes cumulative presales growth patterns (DBR vs cumulative revenue)
-        using Pearson correlation on normalized curves to identify movies with similar booking
-        behavior and audience engagement dynamics.
+        The comparison uses DAY-BY-DAY GROWTH PERCENTAGE RATES as the primary similarity metric.
+        This compares how fast presales are growing (percentage change), not absolute values.
         
-        Returns ALL movies that meet the correlation threshold (≥ min_correlation), not just a fixed number.
-        All movies showing the same trend are considered comp titles.
+        Formula: Growth Rate = (Value_today - Value_yesterday) / Value_yesterday
+        
+        Example:
+        - Movie A: $100 → $200 → $300 (100% then 50% growth)
+        - Movie B: $1000 → $2000 → $3000 (100% then 50% growth)
+        → These are similar because growth rates match, even though absolute values differ.
+        
+        The comparison window is constrained to the overlapping DBR → DIR(≤2) window.
+        Growth rate vectors are normalized before cosine similarity is applied.
         
         Args:
-            target_title: Movie title to find comparables for
-            limit: Optional maximum number of comp titles to return (None = return all matches)
-            min_correlation: Minimum Pearson correlation threshold (default: 0.80)
-            dbr_end: Maximum DBR value to include (default: -1, only presales DBR < 0)
-            
+            target_title: The target movie title to find comps for
+            limit: Maximum number of candidates to return (None = all)
+            min_correlation: Minimum trend similarity (cosine similarity) threshold (default: 0.85)
+            dbr_end: Maximum DIR value to include in comparison (default: 2)
+            min_dbr_overlap_ratio: Minimum overlap ratio of DBR windows (default: 0.60)
+            min_revenue_ratio: Minimum revenue ratio (candidate/target) to accept (default: 0.3)
+            max_revenue_ratio: Maximum revenue ratio (candidate/target) to accept (default: 3.0)
+        
         Returns:
-            List of comp titles with correlation scores and trajectory analysis, sorted by correlation (highest first)
+            {
+                'target_title': str,
+                'target_first_weekend_revenue': float,
+                'target_window': [...],
+                'candidates': [
+                    {
+                        'title': str,
+                        'trend_similarity': float,
+                        'overlap_window': 'DBR -30 → DIR 2',
+                        'overlap_ratio': float,
+                        'dbr_start_gap': int,
+                        'first_weekend_revenue': '$12,345,678',
+                        'target_first_weekend_revenue': '$10,123,456',
+                        'first_weekend_revenue_numeric': float,
+                        'target_first_weekend_revenue_numeric': float,
+                        'valid_comp': bool,
+                        'reasons': [...],
+                        'release_date': date,
+                        'genre': str,
+                        'studio_name': str,
+                        'rating': str
+                    },
+                    ...
+                ],
+                'valid_candidates': [...filtered list...]
+            }
         """
-        logger.info(f"🔍 Finding comp titles for '{target_title}' based on cumulative presales trajectory")
-        logger.info(f"   Using correlation threshold: {min_correlation}, DBR end: {dbr_end}")
-        if limit:
-            logger.info(f"   Limiting results to top {limit} matches")
-        else:
-            logger.info(f"   Returning ALL movies with correlation >= {min_correlation}")
+        logger.info(f"🔍 Comparing '{target_title}' to find trajectory-based comp titles")
+        target_release_date = self._get_canonical_release_date(target_title)
+        if not target_release_date:
+            logger.warning(f"No release date found for '{target_title}'")
+            return {
+                'target_title': target_title,
+                'target_first_weekend_revenue': 0.0,
+                'target_window': [],
+                'target_final_cumulative_presales': 0.0,
+                'candidates': [],
+                'valid_candidates': []
+            }
         
-        # Get target movie's cumulative presales trajectory
-        # Only presales data (DBR < 0, date_sh < release_date)
-        target_trajectory = self._get_cumulative_presales_trajectory(target_title, dbr_end=dbr_end)
+        result: Dict[str, Any] = {
+            'target_title': target_title,
+            'target_first_weekend_revenue': 0.0,
+            'target_window': [],
+            'target_final_cumulative_presales': 0.0,
+            'target_release_date': target_release_date,
+            'candidates': [],
+            'valid_candidates': []
+        }
         
-        if not target_trajectory or len(target_trajectory) == 0:
-            logger.warning(f"No presales trajectory data found for '{target_title}'")
-            return []
+        target_window = self._get_first_weekend_window_trajectory(
+            target_title,
+            max_dir=dbr_end if dbr_end is not None else 2,
+            release_date=target_release_date
+        )
+        if not target_window:
+            logger.warning(f"No DBR/DIR trajectory data found for '{target_title}'")
+            return result
         
-        # Get all other movies in database
-        all_movies = (
+        target_time_values = [point['time_value'] for point in target_window]
+        target_dbrs = [value for value in target_time_values if value < 0]
+        target_first_dbr = min(target_dbrs) if target_dbrs else None
+        target_window_map = {point['time_value']: point for point in target_window}
+        target_total_revenue = float(target_window[-1]['cumulative_revenue']) - float(target_window[0]['cumulative_revenue'])
+        result['target_first_weekend_revenue'] = max(target_total_revenue, 0.0)
+        result['target_window'] = target_window
+        target_final_cumulative = float(target_window[-1]['cumulative_revenue']) if target_window else 0.0
+        result['target_final_cumulative_presales'] = target_final_cumulative
+        
+        all_titles = list(
             Movie.objects
             .exclude(title__iexact=target_title)
-            .values('title', 'release_date')
+            .values_list('title', flat=True)
             .distinct()
         )
         
-        logger.info(f"   Comparing against {all_movies.count()} candidate movies")
+        logger.info(f"   Evaluating {len(all_titles)} candidate movies for '{target_title}'")
         
-        comp_analyses = []
+        processed_titles = set()
         
-        for candidate in all_movies:
-            candidate_title = candidate['title']
+        for candidate_title in all_titles:
+            if not candidate_title:
+                continue
+            
+            candidate_key = candidate_title.lower()
+            if candidate_key in processed_titles:
+                continue
+            processed_titles.add(candidate_key)
+            
+            candidate_release_date = self._get_canonical_release_date(candidate_title)
+            if not candidate_release_date:
+                continue
             
             try:
-                # Get candidate's cumulative presales trajectory
-                # Filter by DBR constraint: DBR <= 2
-                candidate_trajectory = self._get_cumulative_presales_trajectory(
-                    candidate_title, 
-                    dbr_end=dbr_end
+                candidate_window = self._get_first_weekend_window_trajectory(
+                    candidate_title,
+                    max_dir=dbr_end if dbr_end is not None else 2,
+                    release_date=candidate_release_date
                 )
-                
-                if not candidate_trajectory or len(candidate_trajectory) == 0:
+                if not candidate_window:
                     continue
                 
-                # Calculate trajectory similarity (Pearson correlation)
-                correlation = self._calculate_trajectory_similarity(
-                    target_trajectory,
-                    candidate_trajectory
-                )
-                
-                # Filter by minimum correlation threshold
-                # All movies meeting this threshold are comp titles
-                if correlation < min_correlation:
+                candidate_time_values = [point['time_value'] for point in candidate_window]
+                candidate_dbrs = [value for value in candidate_time_values if value < 0]
+                if not candidate_dbrs:
                     continue
                 
-                # Get First Weekend Revenue for both target and candidate
-                # This is critical for comp title selection - revenue scale matters!
-                target_first_weekend = self.get_movie_performance_by_period(
-                    target_title, 
-                    'first_weekend', 
-                    use_cache=True
+                target_keys = set(target_time_values)
+                candidate_keys = set(candidate_time_values)
+                common_keys = sorted(target_keys.intersection(candidate_keys))
+                
+                if len(common_keys) < 3:
+                    # Need at least three shared points to compare trajectories
+                    continue
+                
+                shortest_length = min(len(target_keys), len(candidate_keys))
+                overlap_ratio = (
+                    len(common_keys) / shortest_length
+                    if shortest_length > 0
+                    else 0.0
                 )
-                candidate_first_weekend = self.get_movie_performance_by_period(
-                    candidate_title, 
-                    'first_weekend', 
-                    use_cache=True
-                )
                 
-                target_fw_revenue = float(target_first_weekend.get('total_revenue', 0) or 0) if 'error' not in target_first_weekend else 0.0
-                candidate_fw_revenue = float(candidate_first_weekend.get('total_revenue', 0) or 0) if 'error' not in candidate_first_weekend else 0.0
+                overlap_start = common_keys[0]
+                overlap_end = common_keys[-1]
                 
-                # Calculate revenue scale similarity score (0-1, where 1 = identical revenue)
-                # Use logarithmic scale to handle wide revenue ranges better
-                revenue_similarity = 0.0
-                if target_fw_revenue > 0 and candidate_fw_revenue > 0:
-                    # Calculate ratio (smaller / larger)
-                    ratio = min(target_fw_revenue, candidate_fw_revenue) / max(target_fw_revenue, candidate_fw_revenue)
-                    # Convert to similarity score (ratio of 0.5 = 50% difference = 0.5 similarity)
-                    # ratio of 0.8 = 20% difference = 0.8 similarity
-                    # ratio of 1.0 = identical = 1.0 similarity
-                    revenue_similarity = ratio
+                target_values = [float(target_window_map[key]['cumulative_revenue']) for key in common_keys]
+                candidate_window_map = {point['time_value']: point for point in candidate_window}
+                candidate_values = [float(candidate_window_map[key]['cumulative_revenue']) for key in common_keys]
                 
-                # Calculate composite score: 60% revenue scale + 40% trajectory correlation
-                # Revenue scale is more important for comp titles (similar performance)
-                # Trajectory correlation is secondary (similar booking pattern)
-                composite_score = (revenue_similarity * 0.6) + (correlation * 0.4)
+                target_start_value = target_values[0]
+                candidate_start_value = candidate_values[0]
+                target_end_value = target_values[-1]
+                candidate_end_value = candidate_values[-1]
                 
-                # Get final cumulative presales
-                final_cumulative = candidate_trajectory[-1]['cumulative_revenue'] if candidate_trajectory else Decimal('0')
+                target_overlap_revenue = target_end_value - target_start_value
+                candidate_overlap_revenue = candidate_end_value - candidate_start_value
+                candidate_final_cumulative = float(candidate_window[-1]['cumulative_revenue']) if candidate_window else 0.0
+                growth_alignment = self._analyze_growth_alignment(target_values, candidate_values)
                 
-                # Get additional metrics for the candidate
-                candidate_metrics = self._get_trajectory_metrics(candidate_trajectory)
+                # PRIMARY METRIC: Use growth rate similarity (day-by-day percentage growth)
+                # This compares how fast presales are growing, not absolute values
+                growth_rate_similarity = growth_alignment.get('growth_rate_similarity', 0.0)
                 
-                # Get movie metadata
-                movie_sample = Movie.objects.filter(
-                    title=candidate_title,
-                    release_date=candidate['release_date']
-                ).first()
+                # SECONDARY METRIC: Keep cumulative trajectory similarity for reference
+                normalized_target = self._normalize_vector(target_values)
+                normalized_candidate = self._normalize_vector(candidate_values)
+                cumulative_trajectory_similarity = self._cosine_similarity(normalized_target, normalized_candidate)
                 
-                comp_analysis = {
+                # Use growth rate similarity as primary, but fall back to cumulative if growth rates are invalid
+                # Growth rate similarity can be low if movies have very different starting points or patterns
+                # So we use a weighted combination: 70% growth rate, 30% cumulative (if growth rate is valid)
+                if growth_rate_similarity > 0.01:  # Valid growth rate similarity
+                    # Weighted combination favors growth rate but includes cumulative as backup
+                    trend_similarity = (0.7 * growth_rate_similarity) + (0.3 * cumulative_trajectory_similarity)
+                else:
+                    # Fallback to cumulative if growth rates can't be calculated properly
+                    trend_similarity = cumulative_trajectory_similarity
+                
+                rejection_reasons: List[str] = []
+                
+                if overlap_ratio < min_dbr_overlap_ratio:
+                    rejection_reasons.append(
+                        f"Only {overlap_ratio:.0%} of the presales window overlaps (need ≥{min_dbr_overlap_ratio:.0%})"
+                    )
+                
+                if trend_similarity < min_correlation:
+                    rejection_reasons.append(
+                        f"Trend similarity {trend_similarity:.2f} below threshold {min_correlation:.2f}"
+                    )
+                
+                # Filter by revenue scale - reject candidates with very different revenue scales
+                # This ensures "best comp titles" are similar in both trajectory AND scale
+                if target_overlap_revenue > 0 and candidate_overlap_revenue > 0:
+                    revenue_ratio = candidate_overlap_revenue / target_overlap_revenue
+                    if revenue_ratio < min_revenue_ratio:
+                        rejection_reasons.append(
+                            f"Revenue scale too low: {revenue_ratio:.2f}x target (need ≥{min_revenue_ratio:.2f}x)"
+                        )
+                    elif revenue_ratio > max_revenue_ratio:
+                        rejection_reasons.append(
+                            f"Revenue scale too high: {revenue_ratio:.2f}x target (need ≤{max_revenue_ratio:.2f}x)"
+                        )
+                
+                candidate_record = {
                     'title': candidate_title,
-                    'release_date': candidate['release_date'],
-                    'correlation': correlation,
-                    'correlation_percent': correlation * 100,  # For display as percentage
-                    'revenue_similarity': revenue_similarity,
-                    'revenue_similarity_percent': revenue_similarity * 100,
-                    'composite_score': composite_score,  # Combined score for ranking
-                    'first_weekend_revenue': Decimal(str(candidate_fw_revenue)),
-                    'target_first_weekend_revenue': Decimal(str(target_fw_revenue)),
-                    'final_cumulative_presales': final_cumulative,
-                    'genre': movie_sample.genre if movie_sample else None,
-                    'studio_name': movie_sample.studio_name if movie_sample else None,
-                    'rating': movie_sample.rating if movie_sample else None,
-                    'trajectory': candidate_trajectory,  # Include full trajectory for analysis
-                    **candidate_metrics
+                    'release_date': candidate_release_date,
+                    'trend_similarity': trend_similarity,  # Now based on growth rate similarity
+                    'growth_rate_similarity': growth_rate_similarity,  # Day-by-day growth percentage similarity
+                    'cumulative_trajectory_similarity': cumulative_trajectory_similarity,  # For reference
+                    'overlap_window': self._format_time_window(overlap_start, overlap_end),
+                    'overlap_ratio': overlap_ratio,
+                    'shared_points': len(common_keys),
+                    'first_weekend_revenue_numeric': max(candidate_overlap_revenue, 0.0),
+                    'first_weekend_revenue': self._format_currency(candidate_overlap_revenue),
+                    'target_first_weekend_revenue_numeric': max(target_overlap_revenue, 0.0),
+                    'target_first_weekend_revenue': self._format_currency(target_overlap_revenue),
+                    'target_final_cumulative_presales': target_final_cumulative,
+                    'revenue_ratio': (candidate_overlap_revenue / target_overlap_revenue) if target_overlap_revenue > 0 else 0.0,
+                    'valid_comp': len(rejection_reasons) == 0,
+                    'reasons': rejection_reasons or ["Day-by-day growth rate patterns match strongly."],
+                    'genre': None,
+                    'studio_name': None,
+                    'rating': None,
+                    'final_cumulative_presales': candidate_final_cumulative,
+                    'growth_alignment': growth_alignment
                 }
                 
-                comp_analyses.append(comp_analysis)
+                # Attach metadata
+                movie_sample = Movie.objects.filter(
+                    title=candidate_title,
+                    release_date=candidate_release_date
+                ).first()
+                if movie_sample:
+                    candidate_record['genre'] = movie_sample.genre
+                    candidate_record['studio_name'] = movie_sample.studio_name
+                    candidate_record['rating'] = movie_sample.rating
                 
-            except Exception as e:
-                logger.warning(f"Error processing candidate '{candidate_title}': {e}")
+                result['candidates'].append(candidate_record)
+            
+            except Exception as exc:
+                logger.warning(f"Error analyzing comp candidate '{candidate_title}': {exc}")
                 continue
         
-        # Sort by composite score (highest first) - considers both revenue scale and trajectory
-        comp_analyses.sort(key=lambda x: x['composite_score'], reverse=True)
-        
-        # Return all matches that meet the threshold, or limit if specified
+        # Sort candidates by similarity (descending)
+        result['candidates'].sort(key=lambda x: x['trend_similarity'], reverse=True)
         if limit is not None:
-            comp_titles = comp_analyses[:limit]
-        else:
-            comp_titles = comp_analyses  # Return all matches
+            result['candidates'] = result['candidates'][:limit]
         
-        logger.info(f"✅ Found {len(comp_titles)} comp titles for '{target_title}' (correlation >= {min_correlation})")
-        logger.info(f"   Target First Weekend Revenue: ${float(comp_analyses[0]['target_first_weekend_revenue'])/1_000_000:.2f}M" if comp_analyses else "")
-        for idx, comp in enumerate(comp_titles, 1):
-            fw_rev = float(comp['first_weekend_revenue']) / 1_000_000
-            rev_sim = comp['revenue_similarity']
-            corr = comp['correlation']
-            comp_score = comp['composite_score']
-            logger.info(f"   {idx}. {comp['title']} (First Weekend: ${fw_rev:.2f}M, Revenue Similarity: {rev_sim:.3f}, Correlation: {corr:.3f}, Composite: {comp_score:.3f})")
+        result['valid_candidates'] = [c for c in result['candidates'] if c['valid_comp']]
         
-        return comp_titles
+        logger.info(f"✅ Found {len(result['valid_candidates'])} valid comp titles for '{target_title}'")
+        return result
     
     def _get_cumulative_presales_trajectory(
-        self, 
-        title: str, 
+        self,
+        title: str,
         dbr_start: Optional[int] = None,
-        dbr_end: int = -1
+        dbr_end: int = -1,
+        release_date: Optional[date] = None
     ) -> List[Dict[str, Any]]:
         """
         Get cumulative presales trajectory for a movie by DBR.
@@ -1720,11 +1958,16 @@ class MoviePerformanceService:
         """
         # First, try to get from get_cumulative_advance_booking (most accurate)
         # Use default start if not provided
+        if release_date is None:
+            release_date = self._get_canonical_release_date(title)
+        if not release_date:
+            return []
+        
         if dbr_start is None:
             dbr_start = -60  # Default to wide range
         
         try:
-            result = self.get_cumulative_advance_booking(title, dbr_start, dbr_end)
+            result = self.get_cumulative_advance_booking(title, dbr_start, dbr_end, release_date)
             if 'daily_data' in result and result['daily_data']:
                 trajectory = []
                 for day_data in result['daily_data']:
@@ -1745,10 +1988,11 @@ class MoviePerformanceService:
         
         # Fallback: Get DBR-based trend data and calculate cumulative
         dbr_trend = self.get_day_by_day_dbr_trend(
-            title, 
+            title,
             start_dbr=dbr_start,
             end_dbr=dbr_end,
-            use_cache=True
+            use_cache=True,
+            release_date=release_date
         )
         
         if not dbr_trend:
@@ -1858,6 +2102,162 @@ class MoviePerformanceService:
         
         return correlation
     
+    def _calculate_revenue_alignment_score(
+        self,
+        target_trajectory: List[Dict[str, Any]],
+        candidate_trajectory: List[Dict[str, Any]],
+        common_dbrs: List[int]
+    ) -> float:
+        """
+        Calculate median revenue ratio across the shared DBR window.
+        
+        This captures whether both movies are operating at similar absolute
+        presales levels throughout the presales window, not just at First Weekend.
+        """
+        if not target_trajectory or not candidate_trajectory or not common_dbrs:
+            return 0.0
+
+        target_dict = {point['dbr_value']: float(point['cumulative_revenue']) for point in target_trajectory}
+        candidate_dict = {point['dbr_value']: float(point['cumulative_revenue']) for point in candidate_trajectory}
+
+        ratios: List[float] = []
+        for dbr in common_dbrs:
+            target_value = target_dict.get(dbr)
+            candidate_value = candidate_dict.get(dbr)
+
+            if target_value is None or candidate_value is None:
+                continue
+
+            if target_value <= 0 or candidate_value <= 0:
+                continue
+
+            ratios.append(min(target_value, candidate_value) / max(target_value, candidate_value))
+
+        if not ratios:
+            return 0.0
+
+        return float(median(ratios))
+    
+    def _calculate_revenue_similarity(
+        self,
+        target_first_weekend: float,
+        candidate_first_weekend: float,
+        target_final_presales: float,
+        candidate_final_presales: float
+    ) -> Tuple[float, str]:
+        """
+        Calculate revenue similarity using the best available data.
+        
+        Prefers First Weekend totals when available. If both movies lack
+        opening-weekend revenue (e.g., still in presales), falls back to the
+        final cumulative presales (DBR -1) to keep comps that share the same
+        presale scale.
+        
+        Returns:
+            similarity ratio (0-1), basis string ('first_weekend', 'presales_final', 'insufficient_data')
+        """
+        if target_first_weekend > 0 and candidate_first_weekend > 0:
+            ratio = min(target_first_weekend, candidate_first_weekend) / max(target_first_weekend, candidate_first_weekend)
+            return ratio, 'first_weekend'
+        
+        if target_final_presales > 0 and candidate_final_presales > 0:
+            ratio = min(target_final_presales, candidate_final_presales) / max(target_final_presales, candidate_final_presales)
+            return ratio, 'presales_final'
+        
+        return 0.0, 'insufficient_data'
+    
+    def _get_first_weekend_window_trajectory(
+        self,
+        title: str,
+        max_dir: int = 2,
+        release_date: Optional[date] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Build a unified DBR → DIR window (earliest presale through DIR max_dir) with cumulative revenue.
+        Combines presales trajectory with opening-weekend DIR performance.
+        """
+        # Presales (DBR < 0)
+        dbr_trajectory = self._get_cumulative_presales_trajectory(
+            title,
+            dbr_end=-1,
+            release_date=release_date
+        )
+        if not dbr_trajectory:
+            return []
+        
+        trajectory: List[Dict[str, Any]] = []
+        previous_cumulative = None
+        
+        for point in dbr_trajectory:
+            cumulative_revenue = Decimal(str(point.get('cumulative_revenue', 0) or 0))
+            if previous_cumulative is None:
+                daily_revenue = cumulative_revenue
+            else:
+                daily_revenue = cumulative_revenue - previous_cumulative
+            previous_cumulative = cumulative_revenue
+            
+            trajectory.append({
+                'time_value': int(point['dbr_value']),
+                'time_label': 'DBR',
+                'cumulative_revenue': cumulative_revenue,
+                'daily_revenue': daily_revenue
+            })
+        
+        # Opening weekend (DIR >= 1 up to max_dir)
+        if max_dir is None:
+            max_dir = 2
+        dir_trend = self.get_day_by_day_trend(
+            title,
+            start_dir=1,
+            end_dir=max_dir,
+            release_date=release_date
+        )
+        for record in dir_trend:
+            dir_val = record.get('dir_value')
+            if dir_val is None or dir_val <= 0:
+                continue
+            daily_revenue = Decimal(str(record.get('total_revenue', 0) or 0))
+            previous_cumulative = (previous_cumulative or Decimal('0')) + daily_revenue
+            trajectory.append({
+                'time_value': int(dir_val),
+                'time_label': 'DIR',
+                'cumulative_revenue': previous_cumulative,
+                'daily_revenue': daily_revenue
+            })
+        
+        trajectory.sort(key=lambda x: x['time_value'])
+        return trajectory
+    
+    def _normalize_vector(self, values: List[float]) -> List[float]:
+        if not values:
+            return []
+        first_val = values[0]
+        shifted = [v - first_val for v in values]
+        norm = math.sqrt(sum(v * v for v in shifted))
+        if norm == 0:
+            return [0.0 for _ in shifted]
+        return [v / norm for v in shifted]
+    
+    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
+        if not vec1 or not vec2 or len(vec1) != len(vec2):
+            return 0.0
+        numerator = sum(vec1[i] * vec2[i] for i in range(len(vec1)))
+        denom1 = math.sqrt(sum(v * v for v in vec1))
+        denom2 = math.sqrt(sum(v * v for v in vec2))
+        if denom1 == 0 or denom2 == 0:
+            return 0.0
+        return max(-1.0, min(1.0, numerator / (denom1 * denom2)))
+    
+    def _format_time_window(self, start: int, end: int) -> str:
+        def label(value: int) -> str:
+            return f"DBR {value}" if value < 0 else f"DIR {value}"
+        return f"{label(start)} → {label(end)}"
+    
+    def _format_currency(self, amount: float) -> str:
+        if amount is None:
+            return "$0"
+        return "${:,.0f}".format(amount)
+    
     def _pearson_correlation(self, x: List[float], y: List[float]) -> float:
         """
         Calculate Pearson correlation coefficient between two lists.
@@ -1887,6 +2287,161 @@ class MoviePerformanceService:
         # Clamp to [-1, 1] range to handle floating point errors
         return max(-1.0, min(1.0, correlation))
     
+    def _safe_ratio(self, a: float, b: float) -> Optional[float]:
+        """Return min/max ratio for two magnitudes, ignoring zeros."""
+        if a is None or b is None:
+            return None
+        a_abs = abs(a)
+        b_abs = abs(b)
+        if a_abs <= 1e-6 or b_abs <= 1e-6:
+            return None
+        return min(a_abs, b_abs) / max(a_abs, b_abs)
+
+    def _calculate_growth_rates(self, values: List[float]) -> List[float]:
+        """
+        Calculate day-by-day growth percentage rates.
+        
+        Formula: Growth Rate = (Value_today - Value_yesterday) / Value_yesterday
+        
+        Example:
+        - DBR -25: $100, DBR -24: $200 → Growth Rate = (200-100)/100 = 1.0 (100% growth)
+        - DBR -24: $200, DBR -23: $300 → Growth Rate = (300-200)/200 = 0.5 (50% growth)
+        
+        Returns list of growth rates (one less than input values).
+        """
+        if not values or len(values) < 2:
+            return []
+        
+        growth_rates = []
+        for idx in range(1, len(values)):
+            prev_value = values[idx - 1]
+            curr_value = values[idx]
+            
+            # Handle different cases for growth rate calculation
+            if prev_value > 1e-6:  # Avoid division by very small numbers
+                # Growth rate as percentage: (new - old) / old
+                growth_rate = (curr_value - prev_value) / prev_value
+                # Clamp extreme values to reasonable range (-10 to 10, i.e., -1000% to 1000%)
+                growth_rate = max(-10.0, min(10.0, growth_rate))
+                growth_rates.append(growth_rate)
+            elif prev_value <= 1e-6 and curr_value > 1e-6:
+                # Special case: from near-zero to positive = very high growth
+                # Use a normalized representation: log(1 + ratio) to avoid infinite values
+                growth_rates.append(2.0)  # Represent as ~200% growth (reasonable upper bound)
+            elif prev_value > 1e-6 and curr_value <= 1e-6:
+                # Dropped to near-zero: negative growth
+                growth_rates.append(-0.9)  # Represent as -90% decline
+            else:
+                # Both near-zero or negative, no meaningful growth
+                growth_rates.append(0.0)
+        
+        return growth_rates
+    
+    def _analyze_growth_alignment(self, target_values: List[float], candidate_values: List[float]) -> Dict[str, float]:
+        """
+        Compare day-to-day growth percentage rates between two trajectories.
+        
+        This compares the RATE of growth (percentage change), not absolute values.
+        Movies with similar growth rates are considered similar performers.
+        
+        Example:
+        - Movie A: $100 → $200 → $300 (100% then 50% growth)
+        - Movie B: $1000 → $2000 → $3000 (100% then 50% growth)
+        → These are similar because growth rates match, even though absolute values differ.
+        """
+        if not target_values or not candidate_values or len(target_values) != len(candidate_values):
+            return {
+                'direction_alignment': 0.0,
+                'median_growth_ratio': 0.0,
+                'avg_growth_ratio': 0.0,
+                'growth_rate_similarity': 0.0
+            }
+
+        # Calculate growth rates (percentage change day-by-day)
+        target_growth_rates = self._calculate_growth_rates(target_values)
+        candidate_growth_rates = self._calculate_growth_rates(candidate_values)
+        
+        if not target_growth_rates or not candidate_growth_rates or len(target_growth_rates) != len(candidate_growth_rates):
+            return {
+                'direction_alignment': 0.0,
+                'median_growth_ratio': 0.0,
+                'avg_growth_ratio': 0.0,
+                'growth_rate_similarity': 0.0
+            }
+        
+        # Compare growth rate patterns using cosine similarity
+        normalized_target_rates = self._normalize_vector(target_growth_rates)
+        normalized_candidate_rates = self._normalize_vector(candidate_growth_rates)
+        growth_rate_similarity = self._cosine_similarity(normalized_target_rates, normalized_candidate_rates)
+        
+        # Also calculate direction alignment and ratios for backward compatibility
+        matching_direction = 0
+        comparisons = 0
+        ratios: List[float] = []
+
+        for idx in range(len(target_growth_rates)):
+            target_rate = target_growth_rates[idx]
+            candidate_rate = candidate_growth_rates[idx]
+            
+            # Check if both positive or both negative (same direction)
+            if (target_rate >= 0 and candidate_rate >= 0) or (target_rate <= 0 and candidate_rate <= 0):
+                matching_direction += 1
+            
+            # Calculate ratio of growth rates
+            if candidate_rate != 0:
+                ratio = abs(target_rate / candidate_rate) if abs(target_rate) <= abs(candidate_rate) else abs(candidate_rate / target_rate)
+                ratios.append(ratio)
+            
+            comparisons += 1
+
+        direction_alignment = (matching_direction / comparisons) if comparisons else 0.0
+        median_ratio = float(median(ratios)) if ratios else 0.0
+        avg_ratio = float(sum(ratios) / len(ratios)) if ratios else 0.0
+
+        return {
+            'direction_alignment': direction_alignment,
+            'median_growth_ratio': median_ratio,
+            'avg_growth_ratio': avg_ratio,
+            'growth_rate_similarity': growth_rate_similarity
+        }
+
+    def _format_growth_alignment_text(self, growth_alignment: Dict[str, float]) -> str:
+        if not growth_alignment:
+            return "Slope alignment unavailable"
+        direction_pct = growth_alignment.get('direction_alignment', 0.0) * 100
+        median_ratio = growth_alignment.get('median_growth_ratio', 0.0)
+        return f"{direction_pct:.0f}% daily direction match; median growth ratio {median_ratio:.2f}x"
+
+    def _compute_dbr_overlap(self, target_traj: List[Dict[str, Any]], candidate_traj: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Compute overlap statistics for DBR-based cumulative trajectories."""
+        target_map = {int(point['dbr_value']): float(point['cumulative_revenue']) for point in target_traj if point.get('dbr_value') is not None}
+        candidate_map = {int(point['dbr_value']): float(point['cumulative_revenue']) for point in candidate_traj if point.get('dbr_value') is not None}
+
+        common_dbrs = sorted(set(target_map.keys()).intersection(candidate_map.keys()))
+        if len(common_dbrs) < 3:
+            return None
+
+        target_values = [target_map[dbr] for dbr in common_dbrs]
+        candidate_values = [candidate_map[dbr] for dbr in common_dbrs]
+
+        normalized_target = self._normalize_vector(target_values)
+        normalized_candidate = self._normalize_vector(candidate_values)
+        similarity = self._cosine_similarity(normalized_target, normalized_candidate)
+
+        shortest_length = min(len(target_map), len(candidate_map)) or 1
+        overlap_ratio = len(common_dbrs) / shortest_length
+
+        growth_alignment = self._analyze_growth_alignment(target_values, candidate_values)
+
+        return {
+            'common_dbrs': common_dbrs,
+            'overlap_ratio': overlap_ratio,
+            'similarity': similarity,
+            'growth_alignment': growth_alignment,
+            'target_values': target_values,
+            'candidate_values': candidate_values
+        }
+
     def _get_trajectory_metrics(self, trajectory: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Extract key metrics from a cumulative presales trajectory.
@@ -1935,7 +2490,7 @@ class MoviePerformanceService:
     def format_comp_titles_analysis(
         self,
         target_title: str,
-        comp_titles: List[Dict[str, Any]],
+        comp_titles: Any,
         include_trajectory_details: bool = True
     ) -> str:
         """
@@ -1943,124 +2498,80 @@ class MoviePerformanceService:
         
         Args:
             target_title: The target movie title
-            comp_titles: List of comp title dictionaries from find_best_comp_titles_by_trajectory
+            comp_titles: Result from find_best_comp_titles_by_trajectory
             include_trajectory_details: Whether to include detailed trajectory analysis
             
         Returns:
             Formatted analysis string with trend analysis and reasoning
         """
-        if not comp_titles:
+        candidates: List[Dict[str, Any]] = []
+        valid_candidates: List[Dict[str, Any]] = []
+        target_first_weekend_total = 0.0
+        
+        if isinstance(comp_titles, dict):
+            candidates = comp_titles.get('candidates', [])
+            valid_candidates = [c for c in candidates if c.get('valid_comp')]
+            target_first_weekend_total = comp_titles.get('target_first_weekend_revenue', 0.0)
+        else:
+            candidates = comp_titles or []
+            valid_candidates = candidates
+        
+        if not candidates:
             return f"No comparable titles found for '{target_title}' based on cumulative presales trajectory."
         
         # Get target movie trajectory and First Weekend Revenue for context
-        target_trajectory = self._get_cumulative_presales_trajectory(target_title)
+        target_trajectory = self._get_cumulative_presales_trajectory(target_title, dbr_end=2)
         target_final = target_trajectory[-1]['cumulative_revenue'] if target_trajectory else Decimal('0')
         target_metrics = self._get_trajectory_metrics(target_trajectory) if target_trajectory else {}
-        target_first_weekend = self.get_movie_performance_by_period(target_title, 'first_weekend', use_cache=True)
-        target_fw_revenue = float(target_first_weekend.get('total_revenue', 0) or 0) / 1_000_000 if 'error' not in target_first_weekend else 0.0
+        target_fw_revenue = target_first_weekend_total / 1_000_000 if target_first_weekend_total else float(target_final) / 1_000_000
         
         lines = []
-        lines.append(f"**Best Comparable Titles for {target_title}:**\n")
-        lines.append(f"**Target Movie Performance:**")
-        lines.append(f"- First Weekend Revenue (DIR -1, 1, 2): ${target_fw_revenue:.2f}M")
+        lines.append(f"**Comparable Presales Trajectories for {target_title}:**\n")
+        lines.append("Day-by-day GROWTH PERCENTAGE RATES are compared (not absolute values).")
+        lines.append("Formula: Growth Rate = (Value_today - Value_yesterday) / Value_yesterday")
+        lines.append("Movies with similar growth rates are considered similar performers, regardless of absolute revenue scale.")
+        lines.append("Matches require strong overlap, high growth rate similarity, and closely aligned daily growth patterns.\n")
+        lines.append(f"**Target Summary:**")
+        lines.append(f"- First Weekend (DIR -1 → 2): ${target_fw_revenue:.2f}M")
         lines.append(f"- Final Cumulative Presales: ${float(target_final)/1_000_000:.2f}M")
         lines.append(f"- Booking Pattern: {target_metrics.get('booking_pattern', 'unknown').title()}")
         lines.append("")
-        lines.append("**Selection Methodology:**")
-        lines.append("Comp titles are selected based on a composite score that combines:")
-        lines.append("1. **Revenue Scale Similarity (60% weight)**: How close First Weekend Revenue values are")
-        lines.append("2. **Trajectory Correlation (40% weight)**: How similar the presales growth curve shapes are")
-        lines.append("")
         
-        # Analyze each comp title with detailed reasoning
-        for idx, comp in enumerate(comp_titles[:5], 1):  # Top 5 comp titles
-            comp_title = comp['title']
-            comp_fw_revenue = comp.get('first_weekend_revenue', 0)
-            comp_cumulative = float(comp.get('final_cumulative_presales', 0)) / 1_000_000
-            correlation = comp.get('correlation', 0)
-            revenue_sim = comp.get('revenue_similarity', 0)
-            composite_score = comp.get('composite_score', 0)
-            comp_pattern = comp.get('booking_pattern', 'unknown')
-            
-            lines.append(f"**{idx}. {comp_title}**")
-            lines.append(f"   **First Weekend Revenue:** ${comp_fw_revenue:.2f}M")
-            lines.append(f"   **Final Cumulative Presales:** ${comp_cumulative:.2f}M")
-            lines.append("")
-            
-            # Revenue scale analysis
-            revenue_diff = abs(target_fw_revenue - comp_fw_revenue)
-            revenue_diff_pct = (revenue_diff / target_fw_revenue * 100) if target_fw_revenue > 0 else 0
-            
-            lines.append(f"   **Revenue Scale Similarity: {revenue_sim:.1%}**")
-            if revenue_sim >= 0.8:
-                lines.append(f"   ✓ Excellent match: Revenue difference is only ${revenue_diff:.2f}M ({revenue_diff_pct:.1f}%)")
-            elif revenue_sim >= 0.6:
-                lines.append(f"   ✓ Good match: Revenue difference is ${revenue_diff:.2f}M ({revenue_diff_pct:.1f}%)")
-            elif revenue_sim >= 0.4:
-                lines.append(f"   ⚠ Moderate match: Revenue difference is ${revenue_diff:.2f}M ({revenue_diff_pct:.1f}%)")
-            else:
-                lines.append(f"   ⚠ Lower match: Revenue difference is ${revenue_diff:.2f}M ({revenue_diff_pct:.1f}%)")
-            
-            # Trajectory pattern analysis
-            lines.append(f"   **Trajectory Correlation: {correlation:.1%}**")
-            target_pattern = target_metrics.get('booking_pattern', 'unknown')
-            
-            if target_pattern == comp_pattern:
-                if comp_pattern == 'late':
-                    lines.append(f"   ✓ Both show **late surge pattern**: Slow start, then sharp acceleration in final weeks (DBR -10 to -1)")
-                elif comp_pattern == 'early':
-                    lines.append(f"   ✓ Both show **early acceleration pattern**: Strong momentum from early DBR window (DBR -50 to -30)")
-                elif comp_pattern == 'consistent':
-                    lines.append(f"   ✓ Both show **steady growth pattern**: Consistent daily booking activity throughout presales window")
-            else:
-                lines.append(f"   ⚠ Different patterns: Target shows {target_pattern}, {comp_title} shows {comp_pattern}")
-            
-            # Trend details
-            if include_trajectory_details and comp.get('trajectory'):
-                trajectory = comp.get('trajectory', [])
-                if len(trajectory) >= 2:
-                    early_rev = float(trajectory[0]['cumulative_revenue']) / 1_000_000 if trajectory else 0
-                    mid_rev = float(trajectory[len(trajectory)//2]['cumulative_revenue']) / 1_000_000 if len(trajectory) > 2 else 0
-                    final_rev = float(trajectory[-1]['cumulative_revenue']) / 1_000_000 if trajectory else 0
-                    
-                    lines.append(f"   **Trend Analysis:**")
-                    lines.append(f"   - Early Presales (DBR -50 to -30): ${early_rev:.2f}M")
-                    if mid_rev > 0:
-                        lines.append(f"   - Mid Presales (DBR -30 to -15): ${mid_rev:.2f}M")
-                    lines.append(f"   - Final Presales (DBR -15 to -1): ${final_rev:.2f}M")
-                    
-                    if comp_pattern == 'late':
-                        lines.append(f"   - Pattern: Gradual early growth, then {((final_rev - mid_rev) / mid_rev * 100):.0f}% surge in final weeks")
-                    elif comp_pattern == 'early':
-                        lines.append(f"   - Pattern: Strong early momentum with {((mid_rev - early_rev) / early_rev * 100):.0f}% growth in first half")
-            
-            # Why it's a good comp
-            lines.append(f"   **Composite Score: {composite_score:.3f}** (Higher = Better Match)")
-            lines.append(f"   - Revenue similarity contributes: {revenue_sim * 0.6:.3f} ({revenue_sim:.1%} × 60%)")
-            lines.append(f"   - Trajectory correlation contributes: {correlation * 0.4:.3f} ({correlation:.1%} × 40%)")
-            lines.append("")
-            
-            # Reasoning summary
-            if idx == 1:
-                lines.append(f"   **Why {comp_title} is the Best Match:**")
-                if revenue_sim >= 0.7:
-                    lines.append(f"   • Revenue scale is very similar (within {revenue_diff_pct:.1f}%), indicating comparable box office performance potential")
-                if correlation >= 0.8:
-                    lines.append(f"   • Presales trajectory shape is highly correlated ({correlation:.1%}), suggesting similar audience booking behavior")
-                if target_pattern == comp_pattern:
-                    lines.append(f"   • Both movies show the same booking pattern ({comp_pattern}), indicating comparable audience engagement dynamics")
+        if valid_candidates:
+            lines.append("**Accepted Slope Matches:**")
+            for idx, comp in enumerate(valid_candidates, 1):
+                growth_text = self._format_growth_alignment_text(comp.get('growth_alignment', {}))
+                final_millions = float(comp.get('final_cumulative_presales', 0.0)) / 1_000_000
+                fw_millions = comp.get('first_weekend_revenue_numeric', 0.0) / 1_000_000
+                target_fw_millions = comp.get('target_first_weekend_revenue_numeric', 0.0) / 1_000_000
+                revenue_ratio = comp.get('revenue_ratio', 0.0)
+                lines.append(f"{idx}. **{comp['title']}**")
+                lines.append(f"   - Overlap: {comp['overlap_window']} | {comp.get('shared_points', 0)} matching points ({comp['overlap_ratio']:.0%} of DBR window)")
+                lines.append(f"   - Slope Alignment: {growth_text}")
+                lines.append(f"   - Growth Rate Similarity (day-by-day % growth): {comp.get('growth_rate_similarity', comp.get('trend_similarity', 0.0)):.3f}")
+                lines.append(f"   - Trend Similarity (cumulative trajectory): {comp.get('cumulative_trajectory_similarity', comp.get('trend_similarity', 0.0)):.3f}")
+                lines.append(f"   - First Weekend Revenue: ${fw_millions:.2f}M vs target ${target_fw_millions:.2f}M (ratio: {revenue_ratio:.2f}x)")
+                lines.append(f"   - Final Cumulative Presales: ${final_millions:.2f}M")
+                if comp.get('genre'):
+                    lines.append(f"   - Genre: {comp['genre']}")
+                if comp.get('studio_name'):
+                    lines.append(f"   - Studio: {comp['studio_name']}")
                 lines.append("")
+        else:
+            lines.append("**Accepted Slope Matches:**")
+            lines.append("No trajectories cleared the overlap + similarity thresholds.")
+            lines.append("")
         
-        # Secondary comparables
-        if len(comp_titles) > 1:
-            lines.append("\n**Secondary Comparables:**")
-            lines.append("\nAdditional titles with somewhat similar cumulative trends include:")
-            
-            for comp in comp_titles[1:4]:  # Next 3
-                comp_millions = float(comp.get('final_cumulative_presales', 0)) / 1_000_000
-                similarity = comp.get('trajectory_similarity', 0)
-                pattern = comp.get('booking_pattern', 'unknown')
-                lines.append(f"- **{comp['title']}**: ${comp_millions:.2f}M cumulative presales, {pattern} booking pattern (similarity: {similarity:.3f})")
+        rejected = [c for c in candidates if not c.get('valid_comp')]
+        if rejected:
+            lines.append("**Evaluated But Rejected:**")
+            for comp in rejected:
+                reason = "; ".join(comp.get('reasons', [])) or "Insufficient overlap or slope similarity."
+                growth_text = self._format_growth_alignment_text(comp.get('growth_alignment', {}))
+                lines.append(f"- **{comp['title']}** — {reason}")
+                lines.append(f"  • Overlap: {comp['overlap_window']} ({comp['overlap_ratio']:.0%}, {comp.get('shared_points', 0)} shared points)")
+                lines.append(f"  • Slope Alignment: {growth_text}")
+                lines.append("")
         
         return "\n".join(lines)
     
@@ -2089,8 +2600,17 @@ class MoviePerformanceService:
         """
         logger.info(f"🔍 Finding movies performing like '{target_title}'")
         
+        target_release_date = self._get_canonical_release_date(target_title)
+        if not target_release_date:
+            return {
+                'target_movie': {'title': target_title},
+                'similar_movies': [],
+                'analysis': f"No release information found for '{target_title}'. Unable to compare trajectories.",
+                'error': 'No canonical release'
+            }
+
         # Get target movie's trajectory
-        target_trajectory = self._get_cumulative_presales_trajectory(target_title)
+        target_trajectory = self._get_cumulative_presales_trajectory(target_title, release_date=target_release_date)
         
         if not target_trajectory or len(target_trajectory) == 0:
             return {
@@ -2106,31 +2626,36 @@ class MoviePerformanceService:
         target_millions = float(target_final) / 1_000_000
         
         # Get all other movies and compare
-        all_movies = (
+        all_titles = list(
             Movie.objects
             .exclude(title__iexact=target_title)
-            .values('title', 'release_date')
+            .values_list('title', flat=True)
             .distinct()
         )
         
         similar_movies = []
         
-        for candidate in all_movies:
-            candidate_title = candidate['title']
+        for candidate_title in all_titles:
+            if not candidate_title:
+                continue
+            candidate_release_date = self._get_canonical_release_date(candidate_title)
+            if not candidate_release_date:
+                continue
             
             try:
-                candidate_trajectory = self._get_cumulative_presales_trajectory(candidate_title)
+                candidate_trajectory = self._get_cumulative_presales_trajectory(
+                    candidate_title,
+                    release_date=candidate_release_date
+                )
                 
                 if not candidate_trajectory or len(candidate_trajectory) == 0:
                     continue
                 
-                # Calculate similarity
-                similarity_score = self._calculate_trajectory_similarity(
-                    target_trajectory,
-                    candidate_trajectory
-                )
+                overlap_stats = self._compute_dbr_overlap(target_trajectory, candidate_trajectory)
+                if not overlap_stats:
+                    continue
                 
-                # Filter by minimum threshold
+                similarity_score = overlap_stats['similarity']
                 if similarity_score < min_similarity_threshold:
                     continue
                 
@@ -2142,18 +2667,22 @@ class MoviePerformanceService:
                 # Get movie metadata
                 movie_sample = Movie.objects.filter(
                     title=candidate_title,
-                    release_date=candidate['release_date']
+                    release_date=candidate_release_date
                 ).first()
                 
                 similar_movies.append({
                     'title': candidate_title,
-                    'release_date': candidate['release_date'],
+                    'release_date': candidate_release_date,
                     'similarity_score': similarity_score,
                     'final_cumulative_presales': candidate_final,
                     'final_cumulative_millions': candidate_millions,
                     'booking_pattern': candidate_metrics.get('booking_pattern', 'unknown'),
                     'early_growth_rate': candidate_metrics.get('early_growth_rate', 0),
                     'late_growth_rate': candidate_metrics.get('late_growth_rate', 0),
+                    'overlap_ratio': overlap_stats['overlap_ratio'],
+                    'shared_points': len(overlap_stats['common_dbrs']),
+                    'shared_window': self._format_time_window(overlap_stats['common_dbrs'][0], overlap_stats['common_dbrs'][-1]),
+                    'growth_alignment': overlap_stats['growth_alignment'],
                     'genre': movie_sample.genre if movie_sample else None,
                     'studio_name': movie_sample.studio_name if movie_sample else None,
                     'rating': movie_sample.rating if movie_sample else None
@@ -2179,12 +2708,12 @@ class MoviePerformanceService:
         )
         
         # Get target movie metadata
-        target_movie_sample = Movie.objects.filter(title__iexact=target_title).first()
+        target_movie_sample = Movie.objects.filter(title__iexact=target_title, release_date=target_release_date).first()
         
         return {
             'target_movie': {
                 'title': target_title,
-                'release_date': target_movie_sample.release_date if target_movie_sample else None,
+                'release_date': target_release_date,
                 'final_cumulative_presales': target_final,
                 'final_cumulative_millions': target_millions,
                 'booking_pattern': target_metrics.get('booking_pattern', 'unknown'),
@@ -2233,9 +2762,13 @@ class MoviePerformanceService:
             similarity = movie['similarity_score']
             comp_millions = movie['final_cumulative_millions']
             pattern = movie['booking_pattern']
+            growth_text = self._format_growth_alignment_text(movie.get('growth_alignment', {}))
             
             lines.append(f"{idx}. **{movie['title']}**")
             lines.append(f"   - Similarity Score: {similarity:.3f}")
+            if movie.get('shared_window'):
+                lines.append(f"   - Shared DBR Window: {movie['shared_window']} ({movie.get('shared_points', 0)} points, {movie.get('overlap_ratio', 0):.0%} overlap)")
+            lines.append(f"   - Slope Alignment: {growth_text}")
             lines.append(f"   - Final Cumulative Presales: ${comp_millions:.2f}M")
             lines.append(f"   - Booking Pattern: {pattern.title()}")
             
@@ -2257,7 +2790,7 @@ class MoviePerformanceService:
             lines.append(f"**Best Match:** {best_match['title']} (similarity: {best_match['similarity_score']:.3f})")
             lines.append(f"\nBoth {target_title} and {best_match['title']} exhibit similar day-by-day cumulative growth patterns,")
             lines.append(f"with {target_title} reaching ${target_millions:.2f}M and {best_match['title']} reaching ${best_match['final_cumulative_millions']:.2f}M,")
-            lines.append(f"reflecting comparable scale and shape in their presales trajectories.")
+            lines.append(f"sharing {best_match.get('shared_points', 0)} DBR points where {self._format_growth_alignment_text(best_match.get('growth_alignment', {}))}.")
         
         return "\n".join(lines)
     

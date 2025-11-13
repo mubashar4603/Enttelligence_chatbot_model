@@ -1,7 +1,7 @@
 {
-  "timestamp": "2025-10-29T19:38:22.599351",
-  "total_processed": 7448805,
-  "total_inserted": 1932567,
+  "timestamp": "2025-11-13T10:55:14.374696",
+  "total_processed": 153928,
+  "total_inserted": 178638,
   "status": "completed",
-  "completion_time": "2025-10-29T19:38:22.599365"
+  "completion_time": "2025-11-13T10:55:14.374712"
 }

@@ -186,7 +186,12 @@ class IntelligentFilmAnalyticsAgent:
                 r'comp titles? for (.+)',
                 r'similar movies? to (.+)',
                 r'what movies? are like (.+)',
-                r'which films? are performing like (.+)'
+                r'which films? are performing like (.+)',
+                r'which movies? (?:is|are) performing like (.+)',
+                r'(.+) (?:is|are) performing like (?:what|which) movies?',
+                r'what movies? (?:is|are) performing like (.+)',
+                r'(.+) performing like (?:what|which)',
+                r'movies? performing like (.+)'
             ],
             'sales_prediction': [
                 r'estimated sales? for (.+)',
@@ -499,7 +504,9 @@ class IntelligentFilmAnalyticsAgent:
                 query_type = 'theater_comparison'
             
             # Performance comparison (find movies performing like another) - check BEFORE general performance
-            elif any(word in query_lower for word in ['performing like', 'similar to', 'comparable performance', 'movies like']):
+            # Also handle "X is performing like what movies" and "which movies is performing like X"
+            elif any(word in query_lower for word in ['performing like', 'similar to', 'comparable performance', 'movies like']) or \
+                 re.search(r'(?:is|are)\s+performing\s+like|performing\s+like\s+(?:what|which)', query_lower):
                 query_type = 'performance_comparison'
             elif any(word in query_lower for word in ['compare', 'comparison']) and not ('theater' in query_lower or 'amc' in query_lower or 'regal' in query_lower):
                 query_type = 'performance_analysis'
@@ -634,27 +641,42 @@ class IntelligentFilmAnalyticsAgent:
     def generate_ai_response(self, query: str, data: Dict[str, Any], query_intent: Dict[str, Any]) -> str:
         """Use Llama LLM to generate natural, accurate responses - ONLY based on provided data"""
         try:
+            query_type_override = query_intent.get('query_type', 'general')
+            if query_type_override == 'comp_titles':
+                return self._format_comp_titles_response(data)
+            
             if not self.llama_llm:
                 return self._fallback_response_generation(query, data, query_intent)
             
             # Create strict context-aware prompt - NEVER use general knowledge
-            system_prompt = f"""You are Entelligence AI Assistant, a specialized film analytics AI expert. You provide insightful, data-driven analysis based on the performance data provided to you.
+            system_prompt = f"""You are Entelligence AI Assistant, a specialized film analytics AI expert. You provide insightful, data-driven analysis in clear, natural language that anyone can understand.
 
 CRITICAL RULES:
-1. ALWAYS base your analysis on the data provided in the context
-2. PROVIDE detailed explanations of WHY performance is happening based on the data patterns
-3. MAKE PROJECTIONS based on historical trends when you have day-by-day data
-4. COMPARE movies objectively using the data metrics provided
-5. EXPLAIN patterns and trends in natural, conversational language
-6. USE specific numbers and data points to support all conclusions
-7. If data is insufficient for an answer, explain what specific data is missing and what you can infer from available data
+1. ALWAYS base your analysis on the data provided in the context - never use outside knowledge
+2. WRITE IN NATURAL, CONVERSATIONAL LANGUAGE - explain complex concepts simply
+3. PROVIDE detailed explanations of WHY performance is happening based on the data patterns
+4. USE ANALOGIES and real-world comparisons to make technical concepts accessible
+5. MAKE PROJECTIONS based on historical trends when you have day-by-day data
+6. COMPARE movies objectively using the data metrics provided
+7. EXPLAIN patterns and trends in plain English, avoiding jargon unless you explain it
+8. USE specific numbers and data points to support all conclusions
+9. STRUCTURE your response clearly with brief summaries, detailed explanations, and actionable insights
+10. If data is insufficient, explain what's missing and what you can infer from available data
+
+WRITING STYLE:
+- Start with a clear, conversational summary
+- Use phrases like "What this means is...", "In practical terms...", "Think of it like..."
+- Break down technical metrics into understandable concepts
+- Use bullet points or numbered lists for clarity
+- End with key takeaways or actionable insights
+- Write as if explaining to a colleague, not a technical manual
 
 Your expertise includes providing:
-- **Performance Analysis**: Detailed explanations of why a movie is performing well/poorly based on metrics
-- **Projections**: Forward-looking estimates based on day-by-day trends (e.g., "Based on the current trajectory, we can expect...")
-- **Comparative Analysis**: Objective comparisons showing which movies are better and why
-- **Pattern Recognition**: Identifying trends in daily/weekly patterns (e.g., accelerating/decelerating presales, weekend performance)
-- **Insights**: Actionable insights about what the data reveals about movie performance
+- **Performance Analysis**: Clear explanations of why a movie is performing well/poorly, using simple language
+- **Projections**: Forward-looking estimates with context (e.g., "Based on the current trajectory, we can expect...")
+- **Comparative Analysis**: Easy-to-understand comparisons showing which movies are similar and why
+- **Pattern Recognition**: Identifying trends in accessible language (e.g., "presales are accelerating like a snowball rolling downhill")
+- **Insights**: Actionable insights explained in business terms, not just technical metrics
 
 Query Type: {query_intent.get('query_type', 'general')}
 Analysis Type: {query_intent.get('analysis_type', 'general')}"""
@@ -664,74 +686,45 @@ Analysis Type: {query_intent.get('analysis_type', 'general')}"""
             
             # Customize instructions based on query type
             query_type_str = query_intent.get('query_type', 'general')
-            if query_type_str == 'comp_titles':
-                instructions = """You are analyzing comparable movie titles based on a COMPOSITE SCORE that considers both REVENUE SCALE and TRAJECTORY SIMILARITY.
+            if query_type_str == 'comp_titles' or query_type_str == 'performance_comparison':
+                instructions = """You are analyzing comparable movie titles based on their day-by-day growth patterns. Your goal is to explain in clear, natural language why certain movies are considered similar performers.
 
-CRITICAL UNDERSTANDING:
-- Cumulative Presales ALWAYS INCREASE - they are a running total that sums up day by day
-- Cumulative presales CANNOT decline or "peak" - they only go up as more tickets are sold
-- What we compare is the SHAPE/RATE of increase, not whether it increases (it always does)
-- A "steep" section means HIGH DAILY PRESALES on those days (fast accumulation)
-- A "flat" section means LOW DAILY PRESALES on those days (slow accumulation)
-- The trajectory shows HOW FAST cumulative presales accumulate, not whether they accumulate
+KEY CONCEPT - Growth Rate Similarity:
+Movies are compared based on their DAY-BY-DAY GROWTH PERCENTAGE RATES, not absolute revenue values. 
+For example: If Movie A grows from $100 to $200 (100% growth) and Movie B grows from $1000 to $2000 (100% growth), they have the SAME growth rate even though Movie B has 10x the revenue.
 
-SELECTION METHODOLOGY:
-Comp titles are selected using a COMPOSITE SCORE that combines:
-1. **Revenue Scale Similarity (60% weight)**: How close First Weekend Revenue values are
-   - This is the PRIMARY factor - movies with similar box office performance are better comp titles
-   - Revenue similarity = min(revenue1, revenue2) / max(revenue1, revenue2)
-   - Example: Twisters ($57M) vs Dune ($64.8M) = 57/64.8 = 88% similarity
-2. **Trajectory Correlation (40% weight)**: How similar the presales growth curve shapes are
-   - Pearson correlation on normalized cumulative presales curves
-   - Measures booking pattern similarity (early surge, late surge, steady growth)
+Formula: Growth Rate = (Value_today - Value_yesterday) / Value_yesterday
 
-IMPORTANT DISTINCTION:
-- Cumulative Presales (DBR-based): Total presales collected BEFORE release (DBR -60 to -1)
-- First Weekend Revenue (DIR -1 to 2): Actual revenue AFTER release during first weekend (DIR -1, 1, 2)
-- Comp titles are ranked by COMPOSITE SCORE (not just correlation) - revenue scale matters most!
+This means a movie earning $100M can be similar to a movie earning $10M if they both grow at the same percentage rate day-by-day.
 
-Your Task:
-1. Analyze the provided comp titles data which includes:
-   - Target movie: title, first weekend revenue, final cumulative presales (DBR), booking pattern
-   - Comp titles: each with:
-     * title, first_weekend_revenue (DIR -1 to 2)
-     * composite_score (higher = better match)
-     * revenue_similarity (0-1, how close First Weekend Revenue values are)
-     * correlation (0-1, trajectory shape similarity)
-     * final cumulative presales (DBR)
-     * booking_pattern (early/late/consistent)
-     * trajectory data (DBR vs cumulative revenue)
+Your Response Should:
+1. Start with a clear, conversational summary: "Based on analyzing day-by-day growth patterns, here are the movies performing most similarly to [target movie]..."
 
-2. Generate a detailed natural language response explaining:
-   - **WHY each comp title is a good match** based on the composite score breakdown:
-     * Revenue scale similarity: "Excellent/Good/Moderate match - Revenue difference is $X (Y%)"
-     * Trajectory correlation: "Both show similar booking patterns (early/late/consistent)"
-   - **Trend analysis** for each comp title:
-     * Early Presales (DBR -50 to -30): $X
-     * Mid Presales (DBR -30 to -15): $X  
-     * Final Presales (DBR -15 to -1): $X
-     * Pattern description: "Gradual early growth, then X% surge in final weeks"
-   - **Specific reasoning** for why the best match (highest composite score) is selected:
-     * "Revenue scale is very similar (within X%), indicating comparable box office performance potential"
-     * "Presales trajectory shape is highly correlated (X%), suggesting similar audience booking behavior"
-     * "Both movies show the same booking pattern (X), indicating comparable audience engagement dynamics"
+2. For VALID matches (valid_comp = true):
+   - Explain WHY they're similar in natural language: "These movies show similar growth patterns because..."
+   - Mention the growth rate similarity score and what it means (e.g., "0.85 means 85% similarity in day-by-day growth rates")
+   - Explain the revenue scale comparison (e.g., "Movie X earned 2.3x more than the target, which is within the acceptable 0.3x to 3.0x range")
+   - Describe the overlap window (e.g., "Both movies have presales data from DBR -25 through DIR 2, giving us 100% overlap to compare")
+   - Use natural language: "Both movies show a gradual build-up in presales, then a sharp acceleration close to release day"
 
-3. Format your response naturally:
-   - Start with: "Comp Titles for [movie_name]"
-   - Show target movie performance metrics first
-   - For each comp title (especially the top matches), explain:
-     * **Revenue Scale Match**: "First Weekend Revenue is $X vs target's $Y (Z% difference)" 
-     * **Trajectory Pattern Match**: "Both show [pattern] - [detailed description]"
-     * **Trend Analysis**: Specific DBR ranges and cumulative values
-     * **Why it's a good comp**: Clear reasoning based on composite score components
-   - Focus on COMPOSITE SCORE rankings (highest first) - not just correlation
-   - Explain that revenue scale similarity is weighted 60% because similar box office performance is more important than similar booking patterns
+3. For REJECTED titles (valid_comp = false):
+   - Explain in plain language why they don't match: "While [Movie] has a similar overall trajectory, it was rejected because..."
+   - Use the rejection reasons provided (e.g., "the revenue scale is too different - Movie X earned 15x more, which is outside the acceptable range")
+   - Be helpful: "This movie might be useful for understanding trajectory patterns, but the revenue scale difference makes it less suitable as a direct comp"
 
-4. DO NOT hardcode patterns - use the actual trajectory data provided
-5. DO NOT say cumulative presales "peak" or "decline" - they always increase, only the rate changes
-6. Write conversationally, as if explaining to a film analyst
-7. Always explain WHY a movie is the best comp title with specific metrics and reasoning
-8. Use the composite_score to determine ranking, and explain what makes each comp title similar"""
+4. Write naturally and conversationally:
+   - Use phrases like "This suggests...", "What this means is...", "In practical terms..."
+   - Avoid jargon unless you explain it
+   - Use analogies when helpful: "Think of it like two runners - one starts ahead but they're both accelerating at the same rate"
+   - Make it accessible to both analysts and executives
+
+5. Structure your response:
+   - Brief introduction explaining the analysis method
+   - List of valid comps with clear explanations
+   - Brief mention of rejected titles and why (if relevant)
+   - Summary insight about what patterns you see
+
+6. Never fabricate metrics. Use only the numbers provided in the context."""
             else:
                 instructions = """1. Analyze the data thoroughly and provide detailed insights
 2. Explain WHY the movie is performing this way based on the metrics
@@ -839,155 +832,80 @@ Instructions:
                         f"  - DIR {dir_val}: ${day_revenue:,.2f} revenue, {day_reserved:,} seats{dod_str}"
                     )
             
-            formatted_data.append(f"\nComparable Titles (Found {data.get('comp_titles_count', len(data['comp_titles']))} matches):")
-            formatted_data.append(f"Selection Method: Comp titles are ranked by COMPOSITE SCORE (not just correlation):")
-            formatted_data.append(f"  - Revenue Scale Similarity (60% weight): How close First Weekend Revenue values are")
-            formatted_data.append(f"  - Trajectory Correlation (40% weight): How similar presales growth curve shapes are")
-            formatted_data.append(f"IMPORTANT: Cumulative presales ALWAYS INCREASE - they are a running total. What we compare is the SHAPE/RATE of increase.")
-            formatted_data.append(f"Comp titles are sorted by COMPOSITE SCORE (highest = best match). Revenue scale matters most!")
+            total_candidates = data.get('comp_titles_count', len(data['comp_titles']))
+            valid_count = len(data.get('valid_comp_titles', [c for c in data['comp_titles'] if c.get('valid_comp')]))
+            formatted_data.append(f"\n=== COMPARISON METHODOLOGY ===")
+            formatted_data.append("Movies are compared based on DAY-BY-DAY GROWTH PERCENTAGE RATES, not absolute revenue values.")
+            formatted_data.append("Formula: Growth Rate = (Value_today - Value_yesterday) / Value_yesterday")
+            formatted_data.append("This means movies with similar growth rates are considered similar, even if their revenue scales differ.")
+            formatted_data.append(f"\n=== RESULTS ===")
+            formatted_data.append(f"Total candidates evaluated: {total_candidates}")
+            formatted_data.append(f"Valid matches (meeting all criteria): {valid_count}")
+            formatted_data.append("\nCriteria for valid matches:")
+            formatted_data.append("  • Growth rate similarity ≥ 0.50 (day-by-day percentage growth patterns)")
+            formatted_data.append("  • DBR overlap ≥ 60% of the shorter window")
+            formatted_data.append("  • Revenue scale ratio between 0.3x and 3.0x (similar scale)")
             
-            for i, comp in enumerate(data['comp_titles'], 1):  # Show ALL comp titles, not limited
-                cum_presales = comp.get('final_cumulative_presales', 0)
-                correlation = comp.get('correlation', 0)
-                correlation_pct = comp.get('correlation_percent', correlation * 100)
-                revenue_sim = comp.get('revenue_similarity', 0)
-                revenue_sim_pct = comp.get('revenue_similarity_percent', revenue_sim * 100)
-                composite_score = comp.get('composite_score', 0)
-                pattern = comp.get('booking_pattern', 'unknown')
-                comp_fw_revenue = comp.get('first_weekend_revenue', 0)
-                target_fw_revenue = data.get('target_first_weekend_revenue', 0)
+            for i, comp in enumerate(data['comp_titles'], 1):
+                status = "✅ VALID MATCH" if comp.get('valid_comp') else "❌ REJECTED"
+                trend_similarity = comp.get('trend_similarity', 0.0)
+                growth_rate_similarity = comp.get('growth_rate_similarity', comp.get('trend_similarity', 0.0))
+                cumulative_similarity = comp.get('cumulative_trajectory_similarity', 0.0)
+                overlap_ratio = comp.get('overlap_ratio', 0.0)
+                revenue_ratio = comp.get('revenue_ratio', 0.0)
+                first_weekend = comp.get('first_weekend_revenue_millions', 0.0)
+                target_first_weekend = comp.get('target_first_weekend_revenue_millions', 0.0)
+                final_cum = comp.get('final_cumulative_presales', 0.0) / 1_000_000 if comp.get('final_cumulative_presales') else 0.0
                 
-                formatted_data.append(f"\n{i}. {comp['title']} - Genre: {comp.get('genre', 'N/A')}, Rating: {comp.get('rating', 'N/A')}")
-                formatted_data.append(f"   **COMPOSITE SCORE: {composite_score:.3f}** ({'BEST MATCH' if i == 1 else 'Good Match' if composite_score >= 0.7 else 'Moderate Match'})")
-                formatted_data.append(f"   - Revenue Scale Similarity: {revenue_sim:.3f} ({revenue_sim_pct:.1f}%)")
-                formatted_data.append(f"     * Target First Weekend Revenue: ${target_fw_revenue:,.2f}M")
-                formatted_data.append(f"     * {comp['title']} First Weekend Revenue: ${comp_fw_revenue:,.2f}M")
-                if target_fw_revenue > 0:
-                    revenue_diff = abs(target_fw_revenue - comp_fw_revenue)
-                    revenue_diff_pct = (revenue_diff / target_fw_revenue * 100)
-                    formatted_data.append(f"     * Difference: ${revenue_diff:,.2f}M ({revenue_diff_pct:.1f}%)")
-                formatted_data.append(f"   - Trajectory Correlation: {correlation:.3f} ({correlation_pct:.1f}% shape similarity)")
-                formatted_data.append(f"   Final Cumulative Presales (DBR-based, before release): ${cum_presales:,.2f}M")
-                formatted_data.append(f"   Booking Pattern: {pattern}")
+                formatted_data.append(f"\n{i}. {comp['title']} — {status}")
+                formatted_data.append(f"   Genre: {comp.get('genre', 'Unknown')} | Rating: {comp.get('rating', 'Unknown')} | Studio: {comp.get('studio_name', 'Unknown')}")
                 
-                # Add trajectory data for LLM analysis
-                if comp.get('trajectory'):
-                    formatted_data.append(f"   Cumulative Presales Trajectory (DBR vs Cumulative Revenue):")
-                    formatted_data.append(f"   Note: Cumulative values ALWAYS INCREASE. Compare the RATE/SHAPE of increase.")
-                    trajectory = comp['trajectory']
-                    # Show key points: start, middle, end
-                    if len(trajectory) > 0:
-                        start_point = trajectory[0]
-                        end_point = trajectory[-1]
-                        mid_idx = len(trajectory) // 2
-                        mid_point = trajectory[mid_idx] if mid_idx < len(trajectory) else None
-                        
-                        start_cum = float(start_point.get('cumulative_revenue', 0))/1_000_000
-                        end_cum = float(end_point.get('cumulative_revenue', 0))/1_000_000
-                        formatted_data.append(f"     - DBR {start_point.get('dbr_value', 'N/A')}: ${start_cum:.2f}M cumulative (Early Presales)")
-                        if mid_point:
-                            mid_cum = float(mid_point.get('cumulative_revenue', 0))/1_000_000
-                            formatted_data.append(f"     - DBR {mid_point.get('dbr_value', 'N/A')}: ${mid_cum:.2f}M cumulative (Mid Presales)")
-                        formatted_data.append(f"     - DBR {end_point.get('dbr_value', 'N/A')}: ${end_cum:.2f}M cumulative (Final Presales)")
-                        
-                        # Calculate growth rates for trend analysis
-                        if start_cum > 0 and end_cum > start_cum:
-                            total_growth_pct = ((end_cum - start_cum) / start_cum) * 100
-                            formatted_data.append(f"     - Total Growth: {total_growth_pct:.0f}% from DBR {start_point.get('dbr_value', 'N/A')} to {end_point.get('dbr_value', 'N/A')}")
-                        if mid_point and start_cum > 0:
-                            mid_cum = float(mid_point.get('cumulative_revenue', 0))/1_000_000
-                            early_growth_pct = ((mid_cum - start_cum) / start_cum) * 100 if start_cum > 0 else 0
-                            late_growth_pct = ((end_cum - mid_cum) / mid_cum) * 100 if mid_cum > 0 else 0
-                            formatted_data.append(f"     - Early Growth: {early_growth_pct:.0f}% | Late Growth: {late_growth_pct:.0f}%")
-                        
-                        # Pattern analysis
-                        if pattern == 'late' and mid_point:
-                            mid_cum = float(mid_point.get('cumulative_revenue', 0))/1_000_000
-                            late_surge_pct = ((end_cum - mid_cum) / mid_cum) * 100 if mid_cum > 0 else 0
-                            formatted_data.append(f"     - Pattern: Late surge ({late_surge_pct:.0f}% growth in final weeks)")
-                        elif pattern == 'early' and mid_point:
-                            mid_cum = float(mid_point.get('cumulative_revenue', 0))/1_000_000
-                            early_accel_pct = ((mid_cum - start_cum) / start_cum) * 100 if start_cum > 0 else 0
-                            formatted_data.append(f"     - Pattern: Early acceleration ({early_accel_pct:.0f}% growth in early weeks)")
-                        elif pattern == 'consistent':
-                            formatted_data.append(f"     - Pattern: Steady consistent growth throughout")
-                        if start_cum > 0:
-                            total_increase = end_cum - start_cum
-                            formatted_data.append(f"     - Total increase: ${total_increase:.2f}M (from ${start_cum:.2f}M to ${end_cum:.2f}M)")
-                
-                # Add presales (DBR-based) trend for this comp title if available
-                if 'dbr_trend' in comp and comp['dbr_trend']:
-                    dbr_trend = comp['dbr_trend']
-                    formatted_data.append(f"   Presales Trend (DBR: Days Before Release):")
-                    if dbr_trend:
-                        max_dbr = dbr_trend[0].get('dbr_value', 'N/A')  # First element (most negative)
-                        min_dbr = dbr_trend[-1].get('dbr_value', 'N/A')  # Last element (least negative)
-                        formatted_data.append(f"   Note: Trend flows from maximum negative DBR ({max_dbr}) to minimum negative DBR ({min_dbr}) (cumulative presales increasing).")
-                    # Show key points: first, middle, last few days
-                    if len(dbr_trend) > 10:
-                        # Show first 3, middle 2, last 3
-                        for day in dbr_trend[:3]:
-                            dbr_val = day.get('dbr_value', 'N/A')
-                            cum_revenue = day.get('cumulative_revenue', day.get('total_revenue', 0))
-                            cum_reserved = day.get('cumulative_reserved', day.get('total_reserved_seats', 0))
-                            formatted_data.append(
-                                f"     DBR {dbr_val}: Cumulative ${cum_revenue:,.2f} revenue, {cum_reserved:,} seats"
-                            )
-                        formatted_data.append(f"     ... (showing key points)")
-                        for day in dbr_trend[-3:]:
-                            dbr_val = day.get('dbr_value', 'N/A')
-                            cum_revenue = day.get('cumulative_revenue', day.get('total_revenue', 0))
-                            cum_reserved = day.get('cumulative_reserved', day.get('total_reserved_seats', 0))
-                            formatted_data.append(
-                                f"     DBR {dbr_val}: Cumulative ${cum_revenue:,.2f} revenue, {cum_reserved:,} seats"
-                            )
-                    else:
-                        for day in dbr_trend:
-                            dbr_val = day.get('dbr_value', 'N/A')
-                            cum_revenue = day.get('cumulative_revenue', day.get('total_revenue', 0))
-                            cum_reserved = day.get('cumulative_reserved', day.get('total_reserved_seats', 0))
-                            formatted_data.append(
-                                f"     DBR {dbr_val}: Cumulative ${cum_revenue:,.2f} revenue, {cum_reserved:,} seats"
-                            )
-                
-                # Note: We no longer include post-release (DIR-based) trends for comp titles
-                # Focus is only on cumulative presales trajectory (DBR-based)
+                if comp.get('valid_comp'):
+                    formatted_data.append(f"   ✅ Growth Rate Similarity: {growth_rate_similarity:.3f} ({growth_rate_similarity*100:.1f}% - measures how similar day-by-day growth percentages are)")
+                    if cumulative_similarity > 0:
+                        formatted_data.append(f"   ✅ Cumulative Trajectory Similarity: {cumulative_similarity:.3f} ({cumulative_similarity*100:.1f}% - overall curve shape)")
+                    formatted_data.append(f"   ✅ Overlap Window: {comp.get('overlap_window', 'N/A')} ({overlap_ratio:.0%} of shorter window - both movies have data for this period)")
+                    formatted_data.append(f"   ✅ Revenue Scale: ${first_weekend:,.2f}M vs target ${target_first_weekend:,.2f}M (ratio: {revenue_ratio:.2f}x - within acceptable 0.3x to 3.0x range)")
+                    formatted_data.append(f"   ✅ Final Cumulative Presales: ${final_cum:,.2f}M")
+                    if comp.get('reasons'):
+                        formatted_data.append(f"   ✅ Reasons: {', '.join(comp.get('reasons', []))}")
+                else:
+                    formatted_data.append(f"   Growth Rate Similarity: {growth_rate_similarity:.3f} ({growth_rate_similarity*100:.1f}%)")
+                    formatted_data.append(f"   Overlap Window: {comp.get('overlap_window', 'N/A')} ({overlap_ratio:.0%})")
+                    formatted_data.append(f"   Revenue Scale: ${first_weekend:,.2f}M vs target ${target_first_weekend:,.2f}M (ratio: {revenue_ratio:.2f}x)")
+                    reasons = comp.get('reasons', [])
+                    if reasons:
+                        formatted_data.append(f"   ❌ Rejection Reasons:")
+                        for reason in reasons:
+                            formatted_data.append(f"      • {reason}")
         
         if 'similar_movies' in data:
-            formatted_data.append(f"Target Movie Performance:")
+            formatted_data.append(f"\n=== TARGET MOVIE ===")
             formatted_data.append(f"Movie: {data.get('target_movie', 'Unknown')}")
-            formatted_data.append(f"Overperformance: {data.get('target_overperformance_pct', 'N/A')} ({data.get('target_status', 'Unknown')})")
-            formatted_data.append(f"Revenue: {data.get('target_sales_fmt', '$0')}")
             formatted_data.append(f"Genre: {data.get('target_genre', 'Unknown')} | Rating: {data.get('target_rating', 'Unknown')}")
-            formatted_data.append(f"\nAverage First Weekend Revenue: {data.get('avg_sales_fmt', '$0')}")
+            if data.get('target_first_weekend_revenue_millions', 0) > 0:
+                formatted_data.append(f"First Weekend Revenue: ${data.get('target_first_weekend_revenue_millions', 0):,.2f}M")
+            if data.get('target_final_cumulative_presales_millions', 0) > 0:
+                formatted_data.append(f"Final Cumulative Presales: ${data.get('target_final_cumulative_presales_millions', 0):,.2f}M")
             
-            # Add day-by-day trend data if available
-            if 'target_trend' in data and data['target_trend']:
-                formatted_data.append(f"\nTarget Movie Day-by-Day Trend (First 14 Days):")
-                for day in data['target_trend'][:14]:
-                    dir_val = day.get('dir_value', 'N/A')
-                    day_revenue = day.get('total_revenue', 0)
-                    day_reserved = day.get('total_reserved_seats', 0)
-                    dod_change = day.get('dod_revenue_change')
-                    
-                    dod_str = ""
-                    if dod_change is not None:
-                        sign = "+" if dod_change >= 0 else ""
-                        dod_str = f" (DoD: {sign}{dod_change:.1f}%)"
-                    
-                    formatted_data.append(
-                        f"  - DIR {dir_val}: ${day_revenue:,.2f} revenue, {day_reserved:,} seats{dod_str}"
-                    )
+            formatted_data.append(f"\n=== COMPARISON METHODOLOGY ===")
+            formatted_data.append("Movies are compared based on DAY-BY-DAY GROWTH PERCENTAGE RATES.")
+            formatted_data.append("This means we look at how fast presales are growing (percentage change), not just absolute values.")
+            formatted_data.append(f"\n=== SIMILAR MOVIES FOUND ===")
+            formatted_data.append(f"Total similar movies found: {len(data['similar_movies'])}")
             
-            formatted_data.append(f"\nMovies Performing Similarly:")
             for i, movie in enumerate(data['similar_movies'][:5], 1):
-                status = "overperforming" if movie.get('overperformance', 0) > 0 else "underperforming" if movie.get('overperformance', 0) < 0 else "performing as expected"
                 formatted_data.append(f"\n{i}. {movie['title']}")
-                formatted_data.append(f"   Status: {status} by {abs(movie.get('overperformance', 0)):.1f}%")
-                formatted_data.append(f"   Overall Similarity: {movie.get('similarity_score', 0)*100:.0f}%")
-                formatted_data.append(f"   Pattern Similarity: {movie.get('pattern_similarity', 0)*100:.0f}%")
-                formatted_data.append(f"   Overperformance Similarity: {movie.get('overperf_similarity', 0)*100:.0f}%")
-                formatted_data.append(f"   Revenue: ${movie.get('sales', 0):,.2f}")
+                formatted_data.append(f"   Genre: {movie.get('genre', 'Unknown')} | Rating: {movie.get('rating', 'Unknown')}")
+                growth_rate_sim = movie.get('growth_rate_similarity', movie.get('trend_similarity', 0.0))
+                formatted_data.append(f"   ✅ Growth Rate Similarity: {growth_rate_sim:.3f} ({growth_rate_sim*100:.1f}% - day-by-day growth pattern match)")
+                if movie.get('trend_similarity', 0) > 0:
+                    formatted_data.append(f"   ✅ Overall Trend Similarity: {movie.get('trend_similarity', 0):.3f} ({movie.get('trend_similarity', 0)*100:.1f}%)")
+                formatted_data.append(f"   ✅ Overlap Ratio: {movie.get('overlap_ratio', 0):.0%} (shared data window)")
+                revenue_ratio = movie.get('revenue_ratio', 0.0)
+                if revenue_ratio > 0:
+                    formatted_data.append(f"   ✅ Revenue Scale: {movie.get('first_weekend_revenue_millions', 0):,.2f}M vs target {movie.get('target_first_weekend_revenue_millions', 0):,.2f}M (ratio: {revenue_ratio:.2f}x)")
+                formatted_data.append(f"   Studio: {movie.get('studio_name', 'Unknown')}")
         
         if 'predicted_sales' in data:
             formatted_data.append(f"Predicted Sales: {data['predicted_sales']}")
@@ -1006,33 +924,31 @@ Instructions:
     def _format_comp_titles_response(self, data: Dict[str, Any]) -> str:
         """Format comp titles response - fallback method that returns structured data summary"""
         if 'comp_titles' in data and data['comp_titles']:
-            # Return structured summary - let LLM generate natural language
-            response = f"Found {len(data['comp_titles'])} comparable titles for {data.get('target_movie', 'this movie')}:\n\n"
+            target = data.get('target_movie', 'this movie')
+            response = [f"Comp analysis for {target}:"]
             
-            for i, comp in enumerate(data['comp_titles'], 1):  # Show ALL comp titles
-                response += f"{i}. {comp['title']}\n"
-                response += f"   Genre: {comp.get('genre', 'N/A')} | Rating: {comp.get('rating', 'N/A')}\n"
-                
-                # Use correlation if available, otherwise fallback to similarity_score
-                if 'correlation' in comp:
-                    correlation = comp.get('correlation', 0)
-                    correlation_pct = comp.get('correlation_percent', correlation * 100)
-                    response += f"   Correlation: {correlation:.3f} ({correlation_pct:.1f}% trajectory similarity)\n"
-                elif 'similarity_score' in comp:
-                    similarity = comp.get('similarity_score', 0)
-                    response += f"   Similarity: {similarity:.3f}\n"
-                
-                if 'final_cumulative_presales' in comp:
-                    cum_presales = comp.get('final_cumulative_presales', 0)
-                    response += f"   Final Cumulative Presales: ${cum_presales:,.2f}M\n"
-                
-                if 'booking_pattern' in comp:
-                    pattern = comp.get('booking_pattern', 'unknown')
-                    response += f"   Booking Pattern: {pattern.title()}\n"
-                
-                response += "\n"
+            valid = [c for c in data['comp_titles'] if c.get('valid_comp')]
+            rejected = [c for c in data['comp_titles'] if not c.get('valid_comp')]
             
-            return response
+            if valid:
+                response.append("\n✅ Matches that satisfied all guardrails:")
+                for comp in valid:
+                    fw_target = comp.get('target_first_weekend_revenue_millions', 0.0)
+                    fw_comp = comp.get('first_weekend_revenue_millions', 0.0)
+                    response.append(f"- {comp['title']} (trend similarity {comp.get('trend_similarity', 0.0):.3f}, overlap {comp.get('overlap_ratio', 0.0):.0%})")
+                    response.append(f"  • First weekend scale: ${fw_comp:,.2f}M vs target ${fw_target:,.2f}M (ratio {comp.get('overlap_revenue_ratio', 0.0):.0%})")
+                    response.append(f"  • Window: {comp.get('overlap_window', 'N/A')} | DBR gap: {comp.get('dbr_start_gap')}")
+            else:
+                response.append("\n⚠️ No titles satisfied all comp guardrails.")
+            
+            if rejected:
+                response.append("\nTitles reviewed but rejected (with reasons):")
+                for comp in rejected:
+                    response.append(f"- {comp['title']} (trend similarity {comp.get('trend_similarity', 0.0):.3f}, overlap {comp.get('overlap_ratio', 0.0):.0%})")
+                    reasons = comp.get('reasons', [])
+                    for reason in reasons:
+                        response.append(f"  • {reason}")
+            return "\n".join(response)
         return "I couldn't find comparable titles for this movie in my database. The data may be insufficient for this analysis."
     
     def _format_sales_prediction_response(self, data: Dict[str, Any]) -> str:
@@ -1681,21 +1597,17 @@ Instructions:
             # Use trajectory-based comp titles method (based on cumulative presales - DBR)
             perf_service = MoviePerformanceService()
             
-            # Find comp titles based on cumulative presales trajectory
-            # Return ALL movies with correlation >= 0.80 (no limit)
-            # But we'll focus on closest matches (highest correlations) in the response
-            comp_titles_list = perf_service.find_best_comp_titles_by_trajectory(
+            comp_result = perf_service.find_best_comp_titles_by_trajectory(
                 target_title=movie_title,
-                limit=None,  # Return all matches, not just top 3
-                min_correlation=0.80,  # Minimum threshold for comp titles
-                dbr_end=-1  # Only presales data (DBR < 0)
+                limit=None,
+                min_correlation=0.50,  # Lower threshold for growth rate similarity
+                dbr_end=2
             )
             
-            # Sort by correlation (highest first) to prioritize closest matches
-            # The LLM will focus on the highest correlation scores as "best comp titles"
-            comp_titles_list = sorted(comp_titles_list, key=lambda x: x.get('correlation', 0), reverse=True)
+            comp_candidates = comp_result.get('candidates', []) if isinstance(comp_result, dict) else (comp_result or [])
+            valid_candidates = comp_result.get('valid_candidates', []) if isinstance(comp_result, dict) else comp_candidates
             
-            if not comp_titles_list:
+            if not comp_candidates:
                 return {
                     'type': 'comp_titles',
                     'message': f"No comparable titles found for '{movie_title}' based on cumulative presales trajectory. This may be because there isn't enough presales data available.",
@@ -1706,82 +1618,50 @@ Instructions:
                     'query_type': 'comp_titles'
                 }
             
-            # Get target movie's cumulative presales trajectory for context
-            # Use DBR constraint: DBR <= 2
-            target_trajectory = perf_service._get_cumulative_presales_trajectory(movie_title, dbr_end=2)
-            target_metrics = perf_service._get_trajectory_metrics(target_trajectory) if target_trajectory else {}
-            target_final = target_trajectory[-1]['cumulative_revenue'] if target_trajectory else Decimal('0')
-            target_millions = float(target_final) / 1_000_000
-            
-            # Format comp titles data for response (structured data for LLM)
             comp_analysis = []
-            for comp in comp_titles_list:
-                comp_millions = float(comp.get('final_cumulative_presales', 0)) / 1_000_000
-                
-                # Get First Weekend Revenue (DIR -1 to 2) for comparison
-                comp_first_weekend = perf_service.get_movie_performance_by_period(
-                    comp['title'], 
-                    'first_weekend'
-                )
-                comp_first_weekend_revenue = 0.0
-                if 'error' not in comp_first_weekend and comp_first_weekend.get('total_revenue'):
-                    comp_first_weekend_revenue = float(comp_first_weekend['total_revenue']) / 1_000_000
-                
+            for comp in comp_candidates:
+                first_weekend_numeric = comp.get('first_weekend_revenue_numeric', 0.0)
+                target_first_weekend_numeric = comp.get('target_first_weekend_revenue_numeric', 0.0)
                 comp_analysis.append({
                     'title': comp['title'],
                     'genre': comp.get('genre'),
                     'rating': comp.get('rating'),
                     'studio': comp.get('studio_name'),
-                    'final_cumulative_presales': comp_millions,  # DBR-based: cumulative presales before release
-                    'first_weekend_revenue': comp_first_weekend_revenue,  # DIR -1 to 2: actual first weekend revenue
-                    'correlation': comp.get('correlation', 0),  # Pearson correlation coefficient (trajectory shape)
-                    'correlation_percent': comp.get('correlation_percent', 0),  # For display
-                    'revenue_similarity': comp.get('revenue_similarity', 0),  # Revenue scale similarity (0-1)
-                    'revenue_similarity_percent': comp.get('revenue_similarity_percent', 0),  # For display
-                    'composite_score': comp.get('composite_score', 0),  # Combined score (revenue 60% + correlation 40%)
-                    'booking_pattern': comp.get('booking_pattern', 'unknown'),
-                    'early_growth_rate': comp.get('early_growth_rate', 0),
-                    'late_growth_rate': comp.get('late_growth_rate', 0),
-                    'release_date': comp.get('release_date').isoformat() if comp.get('release_date') else None,
-                    'trajectory': comp.get('trajectory', [])  # Full trajectory data for analysis
+                    'trend_similarity': comp.get('trend_similarity', 0.0),
+                    'overlap_window': comp.get('overlap_window'),
+                    'overlap_ratio': comp.get('overlap_ratio', 0.0),
+                    'dbr_start_gap': comp.get('dbr_start_gap'),
+                    'first_weekend_revenue_millions': first_weekend_numeric / 1_000_000 if first_weekend_numeric else 0.0,
+                    'target_first_weekend_revenue_millions': target_first_weekend_numeric / 1_000_000 if target_first_weekend_numeric else 0.0,
+                    'overlap_revenue_ratio': comp.get('overlap_revenue_ratio', 0.0),
+                    'early_ratio': comp.get('early_ratio', 0.0),
+                    'mid_ratio': comp.get('mid_ratio', 0.0),
+                    'valid_comp': comp.get('valid_comp'),
+                    'reasons': comp.get('reasons'),
+                    'release_date': comp.get('release_date').isoformat() if comp.get('release_date') else None
                 })
             
-            # Get DBR-based trends (presales cumulative trajectory) for target and comp titles
-            # Use DBR constraint: DBR <= 2
-            target_dbr_trend = perf_service.get_day_by_day_dbr_trend(
-                movie_title, 
-                start_dbr=None, 
-                end_dbr=2, 
-                use_cache=True
-            )
+            formatted_analysis = perf_service.format_comp_titles_analysis(movie_title, comp_result)
             
-            # Add DBR trends for comp titles (with DBR constraint: DBR <= 2)
-            for comp in comp_analysis:
-                comp_dbr_trend = perf_service.get_day_by_day_dbr_trend(
-                    comp['title'], 
-                    start_dbr=None, 
-                    end_dbr=2, 
-                    use_cache=True
-                )
-                comp['dbr_trend'] = comp_dbr_trend if comp_dbr_trend else []
-            
-            # Get target movie's First Weekend Revenue (DIR -1 to 2) for comparison
-            target_first_weekend = perf_service.get_movie_performance_by_period(movie_title, 'first_weekend')
+            target_trajectory = perf_service._get_cumulative_presales_trajectory(movie_title, dbr_end=2)
+            target_metrics = perf_service._get_trajectory_metrics(target_trajectory) if target_trajectory else {}
+            target_final = target_trajectory[-1]['cumulative_revenue'] if target_trajectory else Decimal('0')
+            target_final_millions = float(target_final) / 1_000_000 if target_final else 0.0
             target_first_weekend_revenue = 0.0
-            if 'error' not in target_first_weekend and target_first_weekend.get('total_revenue'):
-                target_first_weekend_revenue = float(target_first_weekend['total_revenue']) / 1_000_000
+            if isinstance(comp_result, dict):
+                target_first_weekend_revenue = (comp_result.get('target_first_weekend_revenue') or 0.0) / 1_000_000
             
             # Build structured data for LLM (no hardcoded sentences)
             data = {
                 'target_movie': movie_title,
                 'target_genre': target_movie.genre or 'Unknown',
                 'target_rating': target_movie.rating or 'Unknown',
-                'target_final_cumulative_presales': target_millions,  # DBR-based: cumulative presales before release
-                'target_first_weekend_revenue': target_first_weekend_revenue,  # DIR -1 to 2: actual first weekend revenue
+                'target_final_cumulative_presales': target_final_millions,
+                'target_first_weekend_revenue': target_first_weekend_revenue,
                 'target_booking_pattern': target_metrics.get('booking_pattern', 'unknown'),
-                'target_dbr_trend': target_dbr_trend if target_dbr_trend else [],  # DBR-based: cumulative presales trends
-                'target_trajectory': target_trajectory,  # Full trajectory for LLM analysis
                 'comp_titles': comp_analysis,
+                'valid_comp_titles': [c for c in comp_analysis if c.get('valid_comp')],
+                'rejected_comp_titles': [c for c in comp_analysis if not c.get('valid_comp')],
                 'comp_titles_count': len(comp_analysis),
                 'target_release_date': target_movie.release_date.isoformat() if target_movie.release_date else None
             }
@@ -1793,6 +1673,8 @@ Instructions:
                 'type': 'comp_titles',
                 'message': response,
                 'data': data,
+                'sources': None,
+                'retrieved_count': len(comp_analysis),
                 'accuracy': '100%',
                 'query_type': 'comp_titles'
             }
@@ -2730,11 +2612,67 @@ If you implement these changes, you could potentially increase total revenue by 
             return {'error': f'Error calculating daily earnings: {str(e)}'}
     
     def handle_performance_comparison_query(self, query: str, query_intent: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle performance comparison queries - find movies performing like the target movie"""
+        """
+        Handle performance comparison queries - find movies performing like the target movie.
+        Uses the same trajectory-based method as comp titles (day-by-day growth rate similarity).
+        
+        Handles queries like:
+        - "Twisters is performing like what movies"
+        - "which movies is performing like Homestead"
+        - "what movies are performing like Twisters"
+        - "Homestead performing like what"
+        """
         movie_titles = query_intent.get('movie_titles', [])
         
+        # If no movie titles extracted, try to extract from query patterns
         if not movie_titles:
-            return {'error': 'No movie title found in query'}
+            query_lower = query.lower()
+            # Try patterns like "X is performing like what" or "which movies is performing like X"
+            patterns = [
+                # Pattern 1: "Twisters is performing like what movies"
+                r'^(.+?)\s+(?:is|are)\s+performing\s+like',
+                # Pattern 2: "which movies is performing like Homestead"
+                r'which\s+(?:movies?|films?)\s+(?:is|are)\s+performing\s+like\s+(.+?)(?:\?|$)',
+                # Pattern 3: "what movies are performing like Twisters"
+                r'what\s+(?:movies?|films?)\s+(?:is|are)\s+performing\s+like\s+(.+?)(?:\?|$)',
+                # Pattern 4: "Homestead performing like what"
+                r'^(.+?)\s+performing\s+like\s+(?:what|which)',
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, query_lower)
+                if match:
+                    extracted = match.group(1).strip()
+                    # Clean up extracted title (remove common words)
+                    extracted = re.sub(r'\s+(is|are|the|a|an)\s+', ' ', extracted).strip()
+                    # Try to find movie in database
+                    movie = Movie.objects.filter(title__icontains=extracted).first()
+                    if movie:
+                        movie_titles = [movie.title]
+                        break
+                    # Also try partial match if exact match fails
+                    if not movie_titles:
+                        all_movies = Movie.objects.values_list('title', flat=True).distinct()
+                        for db_movie in all_movies:
+                            if extracted.lower() in db_movie.lower() or db_movie.lower() in extracted.lower():
+                                movie_titles = [db_movie]
+                                break
+                        if movie_titles:
+                            break
+        
+        if not movie_titles:
+            # Try extracting from query using the standard method
+            movie_titles = self._extract_movie_titles_from_query(query)
+        
+        if not movie_titles:
+            return {
+                'type': 'performance_comparison',
+                'message': "I'd be happy to help you find movies performing similarly! Please specify which movie you'd like to compare. For example: 'Twisters is performing like what movies?' or 'which movies is performing like Homestead?'",
+                'data': None,
+                'sources': None,
+                'retrieved_count': 0,
+                'accuracy': '100%',
+                'query_type': 'performance_comparison'
+            }
         
         movie_title = movie_titles[0]
         
@@ -2742,171 +2680,99 @@ If you implement these changes, you could potentially increase total revenue by 
             # Initialize performance service
             perf_service = MoviePerformanceService()
             
-            # Get target movie data using first weekend performance
+            # Get target movie data
             target_movie = Movie.objects.filter(
                 title__icontains=movie_title
             ).first()
             
             if not target_movie:
-                return {'error': f'Movie "{movie_title}" not found in database'}
-            
-            # Get target movie first weekend performance and day-by-day trend
-            target_perf = perf_service.get_movie_performance_by_period(movie_title, 'first_weekend')
-            
-            if 'error' in target_perf:
-                return {'error': target_perf['error']}
-            
-            target_sales = float(target_perf['total_revenue'] or 0)
-            target_reserved = target_perf['total_reserved_seats'] or 0
-            target_occupancy = target_perf['avg_occupancy_rate'] or 0
-            
-            # Get target movie's day-by-day revenue pattern (DIR 0-3)
-            target_trend = perf_service.get_day_by_day_trend(movie_title, start_dir=0, end_dir=3)
-            
-            # Normalize target trend (divide by first day revenue to get relative pattern)
-            target_revenue_vector = [float(day['total_revenue'] or 0) for day in sorted(target_trend, key=lambda x: x['dir_value'])]
-            if target_revenue_vector and target_revenue_vector[0] > 0:
-                target_normalized_vector = [rev / target_revenue_vector[0] for rev in target_revenue_vector]
-            else:
-                target_normalized_vector = [1.0] * len(target_revenue_vector) if target_revenue_vector else []
-            
-            # Get all other movies for comparison using first weekend data
-            all_movies_list = Movie.objects.exclude(
-                title__icontains=movie_title
-            ).values_list('title', flat=True).distinct()
-            
-            # Get first weekend performance for all movies
-            all_movies_data = []
-            for other_title in all_movies_list:
-                other_perf = perf_service.get_movie_performance_by_period(other_title, 'first_weekend')
-                if 'error' not in other_perf:
-                    # Get metadata and day-by-day trend
-                    other_movie = Movie.objects.filter(title__icontains=other_title).first()
-                    other_trend = perf_service.get_day_by_day_trend(other_title, start_dir=0, end_dir=3)
-                    
-                    # Normalize other movie's trend
-                    other_revenue_vector = [float(day['total_revenue'] or 0) for day in sorted(other_trend, key=lambda x: x['dir_value'])]
-                    if other_revenue_vector and other_revenue_vector[0] > 0:
-                        other_normalized_vector = [rev / other_revenue_vector[0] for rev in other_revenue_vector]
-                    else:
-                        other_normalized_vector = [1.0] * len(other_revenue_vector) if other_revenue_vector else []
-                    
-                    all_movies_data.append({
-                        'title': other_title,
-                        'total_sales': float(other_perf['total_revenue'] or 0),
-                        'total_reserved': other_perf['total_reserved_seats'] or 0,
-                        'avg_occupancy': other_perf['avg_occupancy_rate'] or 0,
-                        'genre': other_movie.genre if other_movie else 'Unknown',
-                        'rating': other_movie.rating if other_movie else 'Unknown',
-                        'studio_name': other_movie.studio_name if other_movie else 'Unknown',
-                        'normalized_vector': other_normalized_vector
-                    })
-            
-            # Calculate average performance for comparison
-            if all_movies_data:
-                avg_sales = sum(m.get('total_sales', 0) for m in all_movies_data) / len(all_movies_data)
-                avg_occupancy = sum(m.get('avg_occupancy', 0) for m in all_movies_data) / len(all_movies_data)
-            else:
-                avg_sales = 0
-                avg_occupancy = 0
-            
-            # Calculate target movie's overperformance
-            target_overperformance = ((target_sales - avg_sales) / avg_sales * 100) if avg_sales > 0 else 0
-            
-            # Calculate overperformance for all movies first
-            all_movies_overperf = []
-            for movie in all_movies_data:
-                movie_sales = movie.get('total_sales', 0)
-                movie_overperformance = ((movie_sales - avg_sales) / avg_sales * 100) if avg_sales > 0 else 0
-                all_movies_overperf.append(movie_overperformance)
-            
-            # Find max difference for normalization
-            all_overperfs = [target_overperformance] + all_movies_overperf
-            all_overperfs_abs = [abs(op) for op in all_overperfs]
-            max_overperf_diff = max(all_overperfs_abs) if all_overperfs_abs else 100
-            
-            # Use a reasonable range (up to 200% deviation)
-            if max_overperf_diff > 200:
-                max_overperf_diff = 200
-            
-            # Find movies with similar performance using multi-dimensional similarity
-            similar_movies = []
-            for idx, movie in enumerate(all_movies_data):
-                movie_sales = movie.get('total_sales', 0)
-                movie_occupancy = movie.get('avg_occupancy', 0)
-                movie_overperformance = all_movies_overperf[idx]
-                
-                # Calculate pattern similarity using Pearson correlation
-                pattern_similarity = 0.0
-                if target_normalized_vector and movie.get('normalized_vector'):
-                    pattern_similarity = self._calculate_correlation(target_normalized_vector, movie['normalized_vector'])
-                
-                # Calculate overperformance similarity (1 - normalized difference)
-                if max_overperf_diff > 0:
-                    overperf_similarity = 1 - (abs(movie_overperformance - target_overperformance) / max_overperf_diff)
-                    overperf_similarity = max(0, min(1, overperf_similarity))  # Ensure within [0, 1]
-                else:
-                    overperf_similarity = 0.5  # Default when no variance
-                
-                # Combined similarity score (40% overperformance, 60% pattern)
-                combined_similarity = (0.4 * overperf_similarity) + (0.6 * max(0, pattern_similarity))
-                
-                # Only consider movies with reasonable combined similarity
-                if combined_similarity > 0.3:  # Threshold for "similar enough"
-                    similar_movies.append({
-                        'title': movie.get('title', 'Unknown'),
-                        'sales': movie_sales,
-                        'occupancy': movie_occupancy,
-                        'overperformance': movie_overperformance,
-                        'genre': movie.get('genre', 'Unknown'),
-                        'rating': movie.get('rating', 'Unknown'),
-                        'studio_name': movie.get('studio_name', 'Unknown'),
-                        'similarity_score': combined_similarity,
-                        'pattern_similarity': pattern_similarity,
-                        'overperf_similarity': overperf_similarity
-                    })
-            
-            # Sort by combined similarity score (descending)
-            similar_movies.sort(key=lambda x: x['similarity_score'], reverse=True)
-            
-            # Take top 5 most similar
-            similar_movies = similar_movies[:5]
-            
-            if not similar_movies:
                 return {
                     'type': 'performance_comparison',
-                    'message': f"I couldn't find any movies performing similarly to {movie_title}. This may be because {movie_title} has unique performance characteristics.",
+                    'message': f"I don't have data for '{movie_title}' in my database. I can provide comparisons for movies like: Twisters, Dune: Part Two, Joker: Folie a Deux, Monkey Man, Homestead, Weapons, Superman, Fantastic Four, and Jurassic World Rebirth.",
                     'data': None,
-                    'sources': ['Movie database'],
+                    'sources': None,
                     'retrieved_count': 0,
                     'accuracy': '100%',
                     'query_type': 'performance_comparison'
                 }
             
-            # Prepare data for LLM response generation
-            target_status = "overperforming" if target_overperformance > 0 else "underperforming" if target_overperformance < 0 else "performing as expected"
-            target_genre = target_movie.genre or 'Unknown'
-            target_rating = target_movie.rating or 'Unknown'
+            # Use trajectory-based comp titles method (same logic as comp titles)
+            # This uses day-by-day growth rate similarity, not just first weekend performance
+            comp_result = perf_service.find_best_comp_titles_by_trajectory(
+                target_title=movie_title,
+                limit=None,
+                min_correlation=0.50,  # Lower threshold for growth rate similarity
+                dbr_end=2
+            )
+            
+            comp_candidates = comp_result.get('candidates', []) if isinstance(comp_result, dict) else (comp_result or [])
+            valid_candidates = comp_result.get('valid_candidates', []) if isinstance(comp_result, dict) else comp_candidates
+            
+            if not comp_candidates:
+                return {
+                    'type': 'performance_comparison',
+                    'message': f"I couldn't find any movies performing similarly to {movie_title} based on cumulative presales trajectory. This may be because {movie_title} has unique performance characteristics or there isn't enough presales data available.",
+                    'data': None,
+                    'sources': None,
+                    'retrieved_count': 0,
+                    'accuracy': '100%',
+                    'query_type': 'performance_comparison'
+                }
+            
+            # Format the analysis
+            formatted_analysis = perf_service.format_comp_titles_analysis(movie_title, comp_result)
+            
+            # Build response data
+            similar_movies = []
+            for comp in valid_candidates[:5]:  # Top 5
+                first_weekend_numeric = comp.get('first_weekend_revenue_numeric', 0.0)
+                target_first_weekend_numeric = comp.get('target_first_weekend_revenue_numeric', 0.0)
+                growth_rate_sim = comp.get('growth_rate_similarity', comp.get('trend_similarity', 0.0))
+                
+                similar_movies.append({
+                    'title': comp.get('title', 'Unknown'),
+                    'first_weekend_revenue_millions': first_weekend_numeric / 1_000_000 if first_weekend_numeric else 0.0,
+                    'target_first_weekend_revenue_millions': target_first_weekend_numeric / 1_000_000 if target_first_weekend_numeric else 0.0,
+                    'growth_rate_similarity': growth_rate_sim,
+                    'trend_similarity': comp.get('trend_similarity', 0.0),
+                    'overlap_ratio': comp.get('overlap_ratio', 0.0),
+                    'genre': comp.get('genre'),
+                    'rating': comp.get('rating'),
+                    'studio_name': comp.get('studio_name'),
+                    'revenue_ratio': comp.get('revenue_ratio', 0.0)
+                })
+            
+            if not similar_movies:
+                return {
+                    'type': 'performance_comparison',
+                    'message': f"I couldn't find any movies performing similarly to {movie_title} based on day-by-day growth rate patterns. This may be because {movie_title} has unique performance characteristics.",
+                    'data': None,
+                    'sources': None,
+                    'retrieved_count': 0,
+                    'accuracy': '100%',
+                    'query_type': 'performance_comparison'
+                }
+            
+            # Get target movie trajectory for context
+            target_trajectory = perf_service._get_cumulative_presales_trajectory(movie_title, dbr_end=2)
+            target_final = target_trajectory[-1]['cumulative_revenue'] if target_trajectory else Decimal('0')
+            target_first_weekend_revenue = comp_result.get('target_first_weekend_revenue', 0.0) / 1_000_000 if isinstance(comp_result, dict) else 0.0
             
             # Build comprehensive data structure for LLM and return
             data = {
                 'target_movie': movie_title,
-                'target_overperformance': target_overperformance,
-                'target_overperformance_pct': f"{target_overperformance:.1f}%",
-                'target_status': target_status,
-                'target_sales': target_sales,
-                'target_sales_fmt': f"${target_sales:,.0f}",
-                'target_occupancy': target_occupancy,
-                'target_occupancy_pct': f"{target_occupancy:.1f}%",
-                'target_genre': target_genre,
-                'target_rating': target_rating,
-                'avg_sales': avg_sales,
-                'avg_sales_fmt': f"${avg_sales:,.0f}",
-                'target_trend': target_trend,  # Add day-by-day trend data
+                'target_genre': target_movie.genre or 'Unknown',
+                'target_rating': target_movie.rating or 'Unknown',
+                'target_first_weekend_revenue_millions': target_first_weekend_revenue,
+                'target_final_cumulative_presales_millions': float(target_final) / 1_000_000 if target_final else 0.0,
                 'similar_movies': similar_movies,
+                'formatted_analysis': formatted_analysis,
+                'total_candidates': len(comp_candidates),
+                'valid_candidates_count': len(valid_candidates),
                 'analysis_summary': {
                     'total_similar_found': len(similar_movies),
-                    'top_similar': similar_movies[0] if similar_movies else None
+                    'top_similar': similar_movies[0] if similar_movies else None,
+                    'method': 'trajectory_based_growth_rate_similarity'
                 }
             }
             

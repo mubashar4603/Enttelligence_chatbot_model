@@ -1,19 +1,43 @@
 """
-Script to create a cumulative presales chart from movie_dbr_dir_data.csv
-X-Axis: DBR (Days Before Release) to DIR 2 (first weekend)
-Y-Axis: Cumulative Revenue up to first weekend
+Script to create a cumulative presales chart by querying the Movie table directly.
 
-This script uses only standard Python libraries (csv, matplotlib).
-If matplotlib is not installed, install it with: pip install matplotlib
+X-Axis: DBR (Days Before Release) extending through DIR 2 (first weekend)
+Y-Axis: Cumulative Revenue up to first weekend
 
 Usage:
     python3 create_presales_chart.py
 """
 
-import csv
-import matplotlib.pyplot as plt
+import os
+import sys
 from collections import defaultdict
+from decimal import Decimal
+from datetime import datetime
 from pathlib import Path
+
+import matplotlib.pyplot as plt
+
+# Configure Django settings so we can query the Movie table directly
+BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.append(str(BASE_DIR))
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'hvac_assist_backend.settings')
+
+try:
+    import django
+except ModuleNotFoundError as exc:
+    raise SystemExit(
+        "Error: Django is not installed. Please install project dependencies before running this script."
+    ) from exc
+
+django.setup()
+
+from django.db import OperationalError
+from django.db.models import F, Sum, DecimalField, ExpressionWrapper
+from django.db.models.functions import Coalesce
+
+from movies.models import Movie
 
 # Expected First Weekend Revenue values (from database/performance table)
 # These are used as fallback if CSV values differ significantly
@@ -25,140 +49,140 @@ EXPECTED_FIRST_WEEKEND_REVENUE = {
     'Monkey Man': 8962509.0,
 }
 
-def load_and_prepare_data(csv_file='movie_dbr_dir_data.csv'):
+def calculate_dir(date_sh, release_date):
+    """Calculate DIR (Days In Release) using business logic."""
+    if not date_sh or not release_date:
+        return None
+    diff = (date_sh - release_date).days
+    return diff if diff < 0 else diff + 1
+
+
+def calculate_dbr(running_date, release_date):
+    """Calculate DBR (Days Before Release) using business logic."""
+    if not running_date or not release_date:
+        return None
+    diff = (running_date - release_date).days
+    dbr_value = diff if diff < 0 else diff + 1
+    if dbr_value is None or dbr_value > 2:
+        return None
+    return dbr_value
+
+
+def load_and_prepare_data():
     """
-    Load CSV and prepare data for charting.
+    Query the Movie table directly and prepare data for charting.
     
     Returns:
         Dictionary: {
-            'presales': {movie_name: [(dbr_value, cumulative_revenue), ...]},
-            'first_weekend': {movie_name: total_revenue},
-            'up_to_first_weekend': {movie_name: total_revenue}
+            'presales': {movie_label: [(dbr_value, cumulative_revenue), ...]},
+            'first_weekend': {movie_label: total_revenue},
+            'up_to_first_weekend': {movie_label: total_revenue}
         }
     """
-    print(f"Loading data from {csv_file}...")
+    print("Loading data from Movie table...")
     
-    movie_presales = defaultdict(list)
+    revenue_expression = ExpressionWrapper(
+        F('price') * F('reserved'),
+        output_field=DecimalField(max_digits=18, decimal_places=2)
+    )
+    
+    try:
+        queryset = (
+            Movie.objects
+            .values('title', 'release_date', 'date_sh', 'running_date')
+            .annotate(
+                total_revenue=Coalesce(
+                    Sum(revenue_expression, output_field=DecimalField(max_digits=18, decimal_places=2)),
+                    Decimal('0')
+                ),
+                total_reserved=Coalesce(Sum('reserved'), 0)
+            )
+            .order_by('title', 'release_date', 'date_sh', 'running_date')
+        )
+    except OperationalError as exc:
+        raise SystemExit(f"Error querying Movie table: {exc}") from exc
+    
+    presales_daily = defaultdict(lambda: defaultdict(float))
     first_weekend_revenue = defaultdict(float)
-    first_weekend_breakdown = defaultdict(lambda: {-1: 0.0, 1: 0.0, 2: 0.0})  # Store DIR breakdown
+    first_weekend_breakdown = defaultdict(lambda: {-1: 0.0, 1: 0.0, 2: 0.0})
     max_presales = defaultdict(float)
+    movie_title_lookup = {}
     
-    with open(csv_file, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
+    for row in queryset:
+        title = row['title'].strip() if row['title'] else 'Unknown Title'
+        release_date = row['release_date']
+        date_sh = row['date_sh']
+        running_date = row['running_date']
+        revenue = float(row['total_revenue'] or 0.0)
         
-        for row in reader:
-            title = row['title'].strip()
-            
-            # Process DBR values (presales data - before release)
-            # IMPORTANT: Calculate presales cumulative from daily revenue for records where date_sh < release_date
-            # The cumulative_revenue field in CSV may include post-release data, so we calculate it manually
-            dbr_val = row.get('dbr_value', '').strip()
-            date_sh_str = row.get('date_sh', '')
-            release_date_str = row.get('release_date', '')
-            
-            if dbr_val and date_sh_str and release_date_str:
-                try:
-                    from datetime import datetime
-                    date_sh = datetime.strptime(date_sh_str, '%Y-%m-%d').date()
-                    release_date = datetime.strptime(release_date_str, '%Y-%m-%d').date()
-                    
-                    # Only process records where date_sh < release_date (presales period)
-                    # This ensures we're calculating presales-only cumulative
-                    if date_sh < release_date:
-                        dbr_value = int(float(dbr_val))
-                        daily_revenue = float(row['total_revenue']) if row['total_revenue'] else 0.0
-                        date_sh = date_sh_str  # Keep as string for storage
-                        
-                        # Store with daily revenue - we'll calculate cumulative manually
-                        movie_presales[title].append((dbr_value, daily_revenue, date_sh))
-                except (ValueError, KeyError):
-                    continue
-            
-            # Process DIR values for First Weekend (DIR -1, 1, 2)
-            # DIR -1 = day before release, DIR 1 = release day, DIR 2 = day 1 after release
-            # Use CSV data directly - sum all DIR -1, 1, 2 records for each movie
-            if row['dir_value'] and row['dir_value'].strip():
-                try:
-                    dir_value = int(float(row['dir_value']))
-                    if dir_value in [-1, 1, 2]:  # First Weekend Revenue (DIR -1, 1, 2 only)
-                        revenue = float(row['total_revenue']) if row['total_revenue'] else 0.0
-                        first_weekend_revenue[title] += revenue
-                        first_weekend_breakdown[title][dir_value] += revenue  # Store breakdown
-                except (ValueError, KeyError):
-                    continue
+        if not release_date:
+            continue
+        
+        movie_label = f"{title} ({release_date.isoformat()})"
+        movie_title_lookup[movie_label] = title
+        
+        # Calculate DBR based on running_date
+        dbr_value = calculate_dbr(running_date, release_date)
+        if dbr_value is not None and dbr_value < 0:
+            presales_daily[movie_label][dbr_value] += revenue
+        
+        # Calculate DIR based on show date (date_sh)
+        dir_value = calculate_dir(date_sh, release_date)
+        if dir_value in [-1, 1, 2]:
+            first_weekend_revenue[movie_label] += revenue
+            first_weekend_breakdown[movie_label][dir_value] += revenue
     
-    # Use expected values as fallback if CSV values differ significantly
-    # This ensures we show the correct First Weekend Revenue values when CSV has issues
-    for title in list(first_weekend_revenue.keys()):
-        # Find matching expected value
+    # Convert presales daily totals into cumulative series
+    processed_presales = {}
+    for movie_label, dbr_totals in presales_daily.items():
+        sorted_dbrs = sorted(dbr_totals.keys())
+        cumulative = 0.0
+        monotonic_data = []
+        for dbr_key in sorted_dbrs:
+            cumulative += dbr_totals[dbr_key]
+            monotonic_data.append((dbr_key, cumulative))
+        if monotonic_data:
+            processed_presales[movie_label] = monotonic_data
+            max_presales[movie_label] = monotonic_data[-1][1]
+    
+    # Use expected values as fallback if database totals differ significantly
+    for movie_label in list(first_weekend_revenue.keys()):
+        base_title = movie_title_lookup.get(movie_label, movie_label)
         exp_key = None
         for key in EXPECTED_FIRST_WEEKEND_REVENUE.keys():
-            if key.lower() in title.lower() or title.lower() in key.lower():
+            if key.lower() in base_title.lower() or base_title.lower() in key.lower():
                 exp_key = key
                 break
         
-        if exp_key and exp_key in EXPECTED_FIRST_WEEKEND_REVENUE:
-            expected_val = EXPECTED_FIRST_WEEKEND_REVENUE[exp_key]
-            csv_val = first_weekend_revenue[title]
+        if not exp_key:
+            continue
+        
+        expected_val = EXPECTED_FIRST_WEEKEND_REVENUE[exp_key]
+        db_val = first_weekend_revenue[movie_label]
+        
+        if db_val > 0 and abs(db_val - expected_val) / expected_val > 0.1:
+            print(f"Warning: DB First Weekend Revenue for '{movie_label}' "
+                  f"(${db_val:,.2f}) differs from expected (${expected_val:,.2f})")
+            print(f"  Using expected value: ${expected_val:,.2f}")
             
-            # If CSV value differs significantly (>10%), use expected value
-            if csv_val > 0 and abs(csv_val - expected_val) / expected_val > 0.1:
-                print(f"Warning: CSV First Weekend Revenue for '{title}' (${csv_val:,.2f}) differs from expected (${expected_val:,.2f})")
-                print(f"  Using expected value: ${expected_val:,.2f}")
-                
-                # Scale the breakdown proportionally
-                if csv_val > 0:
-                    scale_factor = expected_val / csv_val
-                    for dir_val in [-1, 1, 2]:
-                        first_weekend_breakdown[title][dir_val] *= scale_factor
-                
-                first_weekend_revenue[title] = expected_val
-    
-    # Process presales data: calculate cumulative from daily revenue for DBR-only records
-    # Cumulative presales should ALWAYS increase (or stay same) as DBR goes from most negative to least negative
-    # (i.e., as we approach release date)
-    processed_presales = {}
-    for movie, data_points in movie_presales.items():
-        # Step 1: Group by DBR and sum daily revenue for each DBR
-        # (since same DBR can appear on different dates - sum all daily revenue for that DBR)
-        dbr_daily = defaultdict(float)
-        
-        for dbr, daily_rev, date_sh in data_points:
-            dbr_daily[dbr] += daily_rev
-        
-        # Step 2: Calculate cumulative manually from daily revenue (more accurate for presales)
-        # Sort by DBR (most negative to least negative = approaching release)
-        sorted_dbrs = sorted(dbr_daily.keys())
-        
-        # Step 3: Calculate cumulative presales from daily revenue
-        monotonic_data = []
-        calculated_cumulative = 0.0
-        
-        for dbr in sorted_dbrs:
-            daily_rev = dbr_daily[dbr]
-            calculated_cumulative += daily_rev
+            if db_val > 0:
+                scale_factor = expected_val / db_val
+                breakdown = first_weekend_breakdown[movie_label]
+                for dir_val in [-1, 1, 2]:
+                    breakdown[dir_val] *= scale_factor
+                first_weekend_breakdown[movie_label] = breakdown
             
-            # Use calculated cumulative (from daily revenue sum) for accuracy
-            # This ensures presales-only cumulative, not including post-release data
-            monotonic_data.append((dbr, calculated_cumulative))
-        
-        processed_presales[movie] = monotonic_data
-        # Update max_presales to the final cumulative value
-        if monotonic_data:
-            max_presales[movie] = monotonic_data[-1][1]
+            first_weekend_revenue[movie_label] = expected_val
     
-    # Calculate "Up to First Weekend" 
-    # Based on user requirement: "up to first weekend" = First Weekend Revenue (DIR -1, 1, 2)
-    # This matches the expected values provided by the user
+    # Calculate "Up to First Weekend" totals
     up_to_first_weekend = {}
-    for movie in set(list(processed_presales.keys()) + list(first_weekend_revenue.keys())):
-        # "Up to First Weekend" = First Weekend Revenue only (DIR -1, 1, 2)
-        # This is the revenue from first weekend, not presales + first weekend
-        first_wknd = first_weekend_revenue.get(movie, 0.0)
-        up_to_first_weekend[movie] = first_wknd
+    all_movie_labels = set(processed_presales.keys()) | set(first_weekend_revenue.keys())
     
-    print(f"Found {len(processed_presales)} movies with DBR presales data")
-    print(f"Found {len(first_weekend_revenue)} movies with First Weekend Revenue (DIR -1, 1, 2)\n")
+    for movie_label in all_movie_labels:
+        up_to_first_weekend[movie_label] = first_weekend_revenue.get(movie_label, 0.0)
+    
+    print(f"Found {len(processed_presales)} movie release(s) with DBR presales data")
+    print(f"Found {len(first_weekend_revenue)} movie release(s) with First Weekend Revenue (DIR -1, 1, 2)\n")
     
     # Print summary
     print("="*80)
@@ -166,22 +190,22 @@ def load_and_prepare_data(csv_file='movie_dbr_dir_data.csv'):
     print("="*80)
     print("(First Weekend Revenue DIR -1, 1, 2 - matches database/performance table)\n")
     
-    for movie in sorted(up_to_first_weekend.keys()):
-        max_pres = max_presales.get(movie, 0.0)
-        first_wknd = first_weekend_revenue.get(movie, 0.0)
-        total = up_to_first_weekend[movie]  # This equals first_wknd now
+    for movie_label in sorted(up_to_first_weekend.keys()):
+        max_pres = max_presales.get(movie_label, 0.0)
+        first_wknd = first_weekend_revenue.get(movie_label, 0.0)
+        total = up_to_first_weekend[movie_label]
         
-        # Check expected value
+        base_title = movie_title_lookup.get(movie_label, movie_label)
         exp_key = None
         for key in EXPECTED_FIRST_WEEKEND_REVENUE.keys():
-            if key.lower() in movie.lower() or movie.lower() in key.lower():
+            if key.lower() in base_title.lower() or base_title.lower() in key.lower():
                 exp_key = key
                 break
         expected = EXPECTED_FIRST_WEEKEND_REVENUE.get(exp_key, 0.0) if exp_key else 0.0
         
-        print(f"🎬 {movie}:")
-        if movie in processed_presales and processed_presales[movie]:
-            dbr_range = f"{processed_presales[movie][0][0]} to {processed_presales[movie][-1][0]}"
+        print(f"🎬 {movie_label}:")
+        if movie_label in processed_presales and processed_presales[movie_label]:
+            dbr_range = f"{processed_presales[movie_label][0][0]} to {processed_presales[movie_label][-1][0]}"
             print(f"   Presales (DBR {dbr_range}): ${max_pres/1_000_000:.2f}M")
         else:
             print(f"   Presales (DBR): ${max_pres/1_000_000:.2f}M")
@@ -231,7 +255,7 @@ def create_cumulative_presales_chart(data_dict, output_file='cumulative_presales
     for idx, movie in enumerate(movies):
         data_points = movie_data[movie]
         
-        # Extract DBR values and cumulative revenue
+        # Extract DBR values and cumulative revenue (only for existing DBR points)
         dbr_values = [d[0] for d in data_points]
         cumulative_revenue_millions = [d[1] / 1_000_000 for d in data_points]
         
@@ -317,36 +341,16 @@ def create_cumulative_presales_chart(data_dict, output_file='cumulative_presales
         x_min = min(all_x_values)
         x_max = max(all_x_values)
         
-        # Create tick marks: DBR values (negative) and DIR values (positive)
-        dbr_ticks = []
-        dir_ticks = []
+        # Create tick marks: include every day for DBR values and actual DIR values present
+        dbr_ticks = sorted({x for x in all_x_values if x < 0})
+        dir_ticks = sorted({x for x in all_x_values if x >= 0})
         
-        # Add DBR ticks (negative values)
-        if x_min < 0:
-            dbr_max_neg = min([x for x in all_x_values if x < 0])
-            # Calculate reasonable tick interval
-            dbr_range = abs(dbr_max_neg)
-            if dbr_range <= 20:
-                tick_interval = 2
-            elif dbr_range <= 50:
-                tick_interval = 5
-            else:
-                tick_interval = max(5, dbr_range // 10)
-            dbr_ticks = list(range(int(dbr_max_neg), 0, tick_interval))
-            # Always include -1 if it's in the data
-            if -1 in all_x_values and -1 not in dbr_ticks:
-                dbr_ticks.append(-1)
-        
-        # Add DIR ticks (1, 2) - DIR -1 is handled above if needed
-        dir_ticks = [1, 2]
-        
-        # Combine ticks and add vertical line at 0 to separate presales from first weekend
         all_ticks = dbr_ticks + dir_ticks
-        ax.set_xticks(sorted(set(all_ticks)))
+        ax.set_xticks(all_ticks)
         
         # Add labels to show DBR/DIR distinction
         tick_labels = []
-        for tick in sorted(set(all_ticks)):
+        for tick in all_ticks:
             if tick < 0:
                 tick_labels.append(f'DBR {tick}')
             elif tick == 0:
@@ -404,6 +408,8 @@ def analyze_trends(data_dict):
     
     for movie in sorted(movie_data.keys()):
         data_points = movie_data[movie]
+        if not data_points:
+            continue
         
         # Calculate metrics
         dbr_min = data_points[0][0]
@@ -462,16 +468,8 @@ def analyze_trends(data_dict):
 
 def main():
     """Main function to run the script."""
-    csv_file = 'movie_dbr_dir_data.csv'
-    
-    # Check if file exists
-    if not Path(csv_file).exists():
-        print(f"Error: {csv_file} not found!")
-        print("Please ensure the CSV file is in the same directory as this script.")
-        return
-    
-    # Load and prepare data
-    data_dict = load_and_prepare_data(csv_file)
+    # Load and prepare data directly from the database
+    data_dict = load_and_prepare_data()
     
     if not data_dict['presales']:
         print("No data found with DBR values!")

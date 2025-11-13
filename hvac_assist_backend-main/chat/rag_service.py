@@ -1233,125 +1233,147 @@ class MovieRAGService:
                     if target_title:
                         target_movie = target_title
                 
-                comp_titles = self.performance_service.get_best_comp_titles(limit=10)
-                
-                if not comp_titles:
+                # If target movie is specified, use trajectory-based comp titles (same logic as chart)
+                if target_movie:
+                    logger.info(f"🎯 Using trajectory-based comp titles for '{target_movie}' (same logic as chart)")
+                    
+                    # Find the target movie from raw Movie table
+                    from movies.models import Movie
+                    target_movie_obj = Movie.objects.filter(
+                        title__icontains=target_movie
+                    ).first()
+                    
+                    if not target_movie_obj:
+                        return {
+                            'answer': f"I don't have data for '{target_movie}' in my database. I can provide comp titles for movies like: Twisters, Dune: Part Two, Joker: Folie a Deux, Monkey Man, Homestead, Weapons, Superman, Fantastic Four, and Jurassic World Rebirth. Could you please specify one of these movies?",
+                            'data': None,
+                            'query_type': 'performance_analytics'
+                        }
+                    
+                    # Use trajectory-based comp titles method (based on cumulative presales - DBR)
+                    # This is the SAME logic used in create_presales_chart.py
+                    comp_result = self.performance_service.find_best_comp_titles_by_trajectory(
+                        target_title=target_movie,
+                        limit=None,
+                        min_correlation=0.50,  # Lower threshold for growth rate similarity
+                        dbr_end=2
+                    )
+                    
+                    comp_candidates = comp_result.get('candidates', []) if isinstance(comp_result, dict) else (comp_result or [])
+                    valid_candidates = comp_result.get('valid_candidates', []) if isinstance(comp_result, dict) else comp_candidates
+                    
+                    if not comp_candidates:
+                        return {
+                            'answer': f"No comparable titles found for '{target_movie}' based on cumulative presales trajectory. This may be because there isn't enough presales data available.",
+                            'data': [],
+                            'query_type': 'performance_analytics'
+                        }
+                    
+                    # Format the analysis using the same method as intelligent_film_analytics_agent
+                    formatted_analysis = self.performance_service.format_comp_titles_analysis(target_movie, comp_result)
+                    
+                    # Build answer with trajectory-based results
+                    answer_parts = [f"**Best Comp Titles for {target_movie} (Based on Trajectory Analysis):**\n\n"]
+                    answer_parts.append(formatted_analysis)
+                    
+                    # Add summary of valid comps
+                    if valid_candidates:
+                        answer_parts.append(f"\n**Valid Comparable Titles ({len(valid_candidates)}):**\n")
+                        for idx, comp in enumerate(valid_candidates[:5], 1):  # Show top 5
+                            trend_sim = comp.get('trend_similarity', 0.0)
+                            overlap_ratio = comp.get('overlap_ratio', 0.0)
+                            fw_revenue = comp.get('first_weekend_revenue_numeric', 0.0) / 1_000_000
+                            answer_parts.append(
+                                f"{idx}. **{comp.get('title', 'Unknown')}**\n"
+                                f"   • Trend Similarity: {trend_sim:.3f}\n"
+                                f"   • Overlap Ratio: {overlap_ratio:.0%}\n"
+                                f"   • First Weekend Revenue: ${fw_revenue:.2f}M\n"
+                            )
+                    
                     return {
-                        'answer': "No comp title performance data available.",
-                        'data': []
+                        'answer': "\n".join(answer_parts),
+                        'data': {
+                            'target_movie': target_movie,
+                            'candidates': comp_candidates,
+                            'valid_candidates': valid_candidates,
+                            'formatted_analysis': formatted_analysis
+                        },
+                        'query_type': 'performance_analytics'
                     }
                 
-                answer_parts = ["**Best Performing Movies (Comp Titles):**\n"]
-                
-                # If target movie specified, highlight it and compare
-                target_found = False
-                target_idx = None
-                if target_movie:
-                    for idx, comp in enumerate(comp_titles):
-                        if comp.get('title', '').lower() == target_movie.lower():
-                            target_found = True
-                            target_idx = idx
-                            break
-                
-                # Calculate benchmark metrics
-                # Convert Decimal to float for calculations
-                from decimal import Decimal
-                top_revenue = float(comp_titles[0].get('first_weekend_revenue', 0) or 0) if comp_titles else 0.0
-                avg_revenue = float(sum(float(m.get('first_weekend_revenue', 0) or 0) for m in comp_titles) / len(comp_titles) if comp_titles else 0.0)
-                
-                # Add intro with context
-                if target_movie and target_found:
-                    target_revenue = float(comp_titles[target_idx].get('first_weekend_revenue', 0) or 0)
-                    answer_parts.append(
-                        f"Here are the best performing comparable titles for benchmark analysis. "
-                        f"**{target_movie}** is ranked **#{target_idx + 1}** with ${target_revenue:,.2f} in first weekend revenue.\n"
-                    )
+                # If no target movie specified, fall back to revenue-based ranking
                 else:
+                    logger.info("📊 No target movie specified, using revenue-based ranking")
+                    comp_titles = self.performance_service.get_best_comp_titles(limit=10)
+                    
+                    if not comp_titles:
+                        return {
+                            'answer': "No comp title performance data available.",
+                            'data': []
+                        }
+                    
+                    answer_parts = ["**Best Performing Movies (Comp Titles):**\n"]
+                    
+                    # Calculate benchmark metrics
+                    from decimal import Decimal
+                    top_revenue = float(comp_titles[0].get('first_weekend_revenue', 0) or 0) if comp_titles else 0.0
+                    avg_revenue = float(sum(float(m.get('first_weekend_revenue', 0) or 0) for m in comp_titles) / len(comp_titles) if comp_titles else 0.0)
+                    
                     answer_parts.append(
                         f"Here are the top performing movies based on first weekend revenue performance. "
                         f"The average first weekend revenue across these titles is **${avg_revenue:,.2f}**.\n"
                     )
-                
-                # List comp titles with detailed explanations
-                for idx, movie in enumerate(comp_titles, 1):
-                    title = movie.get('title', 'Unknown')
-                    # Convert Decimal to float for calculations
-                    revenue = float(movie.get('first_weekend_revenue', 0) or 0)
-                    reserved = int(movie.get('first_weekend_reserved', 0) or 0)
-                    impressions = int(movie.get('first_weekend_impressions', 0) or 0)
-                    avg_price = float(movie.get('avg_price', 0) or 0)
-                    genre = movie.get('genre', 'Unknown')
-                    studio = movie.get('studio_name', 'Unknown')
                     
-                    # Performance analysis (all values are now float)
-                    if idx == 1:
-                        performance_desc = "🏆 **Top performer** - exceptional opening weekend"
-                        if top_revenue > avg_revenue * 1.5:
-                            performance_desc += ", significantly above average"
-                    elif revenue >= avg_revenue * 1.2:
-                        performance_desc = "💪 **Strong performer** - well above average"
-                    elif revenue >= avg_revenue * 0.8:
-                        performance_desc = "✅ **Above average** - solid performance"
-                    elif revenue >= avg_revenue * 0.5:
-                        performance_desc = "📊 **Average performer** - meets expectations"
-                    else:
-                        performance_desc = "📉 **Below average** - needs improvement"
+                    # List comp titles with detailed explanations
+                    for idx, movie in enumerate(comp_titles, 1):
+                        title = movie.get('title', 'Unknown')
+                        revenue = float(movie.get('first_weekend_revenue', 0) or 0)
+                        reserved = int(movie.get('first_weekend_reserved', 0) or 0)
+                        impressions = int(movie.get('first_weekend_impressions', 0) or 0)
+                        avg_price = float(movie.get('avg_price', 0) or 0)
+                        genre = movie.get('genre', 'Unknown')
+                        studio = movie.get('studio_name', 'Unknown')
+                        
+                        # Performance analysis
+                        if idx == 1:
+                            performance_desc = "🏆 **Top performer** - exceptional opening weekend"
+                            if top_revenue > avg_revenue * 1.5:
+                                performance_desc += ", significantly above average"
+                        elif revenue >= avg_revenue * 1.2:
+                            performance_desc = "💪 **Strong performer** - well above average"
+                        elif revenue >= avg_revenue * 0.8:
+                            performance_desc = "✅ **Above average** - solid performance"
+                        elif revenue >= avg_revenue * 0.5:
+                            performance_desc = "📊 **Average performer** - meets expectations"
+                        else:
+                            performance_desc = "📉 **Below average** - needs improvement"
+                        
+                        answer_parts.append(
+                            f"\n**{idx}. {title}** ({genre})\n"
+                            f"   • Studio: {studio}\n"
+                            f"   • First Weekend Revenue: **${revenue:,.2f}**\n"
+                            f"   • Reserved Seats: {reserved:,}\n"
+                            f"   • Impressions: {impressions:,}\n"
+                            f"   • Average Price: ${avg_price:,.2f}\n"
+                            f"   • {performance_desc}"
+                        )
                     
-                    # Mark target movie if found
-                    if target_movie and title.lower() == target_movie.lower():
-                        performance_desc = f"🎯 **Your movie** - {performance_desc.lower()}"
-                    
+                    # Add summary insights
                     answer_parts.append(
-                        f"\n**{idx}. {title}** ({genre})\n"
-                        f"   • Studio: {studio}\n"
-                        f"   • First Weekend Revenue: **${revenue:,.2f}**\n"
-                        f"   • Reserved Seats: {reserved:,}\n"
-                        f"   • Impressions: {impressions:,}\n"
-                        f"   • Average Price: ${avg_price:,.2f}\n"
-                        f"   • {performance_desc}"
+                        f"\n**Key Insights:**\n"
+                        f"• The top performer (**{comp_titles[0].get('title', 'N/A')}**) has generated "
+                        f"${top_revenue:,.2f}, setting a strong benchmark for comparable titles.\n"
+                        f"• Movies performing above ${avg_revenue:,.2f} (average) demonstrate strong audience appeal "
+                        f"and effective marketing strategies.\n"
+                        f"• First weekend performance is critical for box office momentum and indicates potential "
+                        f"long-term success."
                     )
                     
-                    # Add comparison note for target movie
-                    if target_movie and title.lower() == target_movie.lower() and idx > 1:
-                        pct_of_top = (revenue / top_revenue) * 100 if top_revenue > 0 else 0
-                        gap = top_revenue - revenue
-                        answer_parts.append(
-                            f"   • Compared to top performer: {pct_of_top:.1f}% of #1, "
-                            f"${gap:,.2f} revenue gap"
-                        )
-                
-                # Add summary insights
-                answer_parts.append(
-                    f"\n**Key Insights:**\n"
-                    f"• The top performer (**{comp_titles[0].get('title', 'N/A')}**) has generated "
-                    f"${top_revenue:,.2f}, setting a strong benchmark for comparable titles.\n"
-                    f"• Movies performing above ${avg_revenue:,.2f} (average) demonstrate strong audience appeal "
-                    f"and effective marketing strategies.\n"
-                    f"• First weekend performance is critical for box office momentum and indicates potential "
-                    f"long-term success."
-                )
-                
-                # Add recommendation if target movie found
-                if target_movie and target_found:
-                    target_revenue = float(comp_titles[target_idx].get('first_weekend_revenue', 0) or 0)
-                    if target_revenue < avg_revenue:
-                        answer_parts.append(
-                            f"\n**Recommendation for {target_movie}:** "
-                            f"Currently below average performance. Consider reviewing marketing strategy, "
-                            f"audience targeting, or release timing to improve first weekend results."
-                        )
-                    elif target_revenue < top_revenue * 0.8:
-                        answer_parts.append(
-                            f"\n**Recommendation for {target_movie}:** "
-                            f"Solid performance but has room for growth. Analyze top performers' strategies "
-                            f"to identify improvement opportunities."
-                        )
-                
-                return {
-                    'answer': "\n".join(answer_parts),
-                    'data': comp_titles,
-                    'query_type': 'performance_analytics'
-                }
+                    return {
+                        'answer': "\n".join(answer_parts),
+                        'data': comp_titles,
+                        'query_type': 'performance_analytics'
+                    }
             
         except Exception as e:
             logger.error(f"❌ Error handling performance query: {e}", exc_info=True)
