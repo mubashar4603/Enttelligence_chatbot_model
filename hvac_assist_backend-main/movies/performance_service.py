@@ -1749,13 +1749,15 @@ class MoviePerformanceService:
             'valid_candidates': []
         }
         
+        # Get DBR trajectory (only DBR values, no DIR)
+        # Uses full available DBR range for target movie (from max negative to -1)
         target_window = self._get_first_weekend_window_trajectory(
             target_title,
-            max_dir=dbr_end if dbr_end is not None else 2,
+            max_dir=None,  # Ignored - only DBR is used
             release_date=target_release_date
         )
         if not target_window:
-            logger.warning(f"No DBR/DIR trajectory data found for '{target_title}'")
+            logger.warning(f"No DBR trajectory data found for '{target_title}'")
             return result
         
         target_time_values = [point['time_value'] for point in target_window]
@@ -1793,9 +1795,11 @@ class MoviePerformanceService:
                 continue
             
             try:
+                # Get DBR trajectory (only DBR values, no DIR)
+                # Uses full available DBR range for candidate movie (from max negative to -1)
                 candidate_window = self._get_first_weekend_window_trajectory(
                     candidate_title,
-                    max_dir=dbr_end if dbr_end is not None else 2,
+                    max_dir=None,  # Ignored - only DBR is used
                     release_date=candidate_release_date
                 )
                 if not candidate_window:
@@ -1824,38 +1828,41 @@ class MoviePerformanceService:
                 overlap_start = common_keys[0]
                 overlap_end = common_keys[-1]
                 
-                target_values = [float(target_window_map[key]['cumulative_revenue']) for key in common_keys]
+                # For DoD% calculation, use DAILY revenue (not cumulative)
+                # Example: DBR -45=$100, -44=$200, -43=$300 → DoD%: (200-100)/100=100%, (300-200)/200=50%
+                target_daily_values = [float(target_window_map[key].get('daily_revenue', 0)) for key in common_keys]
                 candidate_window_map = {point['time_value']: point for point in candidate_window}
-                candidate_values = [float(candidate_window_map[key]['cumulative_revenue']) for key in common_keys]
+                candidate_daily_values = [float(candidate_window_map[key].get('daily_revenue', 0)) for key in common_keys]
                 
-                target_start_value = target_values[0]
-                candidate_start_value = candidate_values[0]
-                target_end_value = target_values[-1]
-                candidate_end_value = candidate_values[-1]
+                # Also keep cumulative for revenue scale comparison
+                target_cumulative_values = [float(target_window_map[key]['cumulative_revenue']) for key in common_keys]
+                candidate_cumulative_values = [float(candidate_window_map[key]['cumulative_revenue']) for key in common_keys]
+                
+                target_start_value = target_cumulative_values[0]
+                candidate_start_value = candidate_cumulative_values[0]
+                target_end_value = target_cumulative_values[-1]
+                candidate_end_value = candidate_cumulative_values[-1]
                 
                 target_overlap_revenue = target_end_value - target_start_value
                 candidate_overlap_revenue = candidate_end_value - candidate_start_value
                 candidate_final_cumulative = float(candidate_window[-1]['cumulative_revenue']) if candidate_window else 0.0
-                growth_alignment = self._analyze_growth_alignment(target_values, candidate_values)
                 
-                # PRIMARY METRIC: Use growth rate similarity (day-by-day percentage growth)
-                # This compares how fast presales are growing, not absolute values
+                # Calculate DoD% similarity using DAILY revenue (day-over-day change)
+                growth_alignment = self._analyze_growth_alignment(target_daily_values, candidate_daily_values)
+                
+                # PRIMARY METRIC: Use DoD% similarity (day-by-day percentage change comparison)
+                # This compares how fast presales are growing day-over-day, not absolute values
+                # Method: Calculate DoD% for each day, compare day-by-day with ±2% tolerance
+                # Example: Movie A: -45=$100, -44=$200 (100% growth) vs Movie B: -45=$1000, -44=$2000 (100% growth)
+                # → Similar because DoD% matches (within ±2%)
                 growth_rate_similarity = growth_alignment.get('growth_rate_similarity', 0.0)
+                dod_match_ratio = growth_alignment.get('dod_match_ratio', 0.0)
+                avg_dod_difference = growth_alignment.get('avg_dod_difference', 0.0)
                 
-                # SECONDARY METRIC: Keep cumulative trajectory similarity for reference
-                normalized_target = self._normalize_vector(target_values)
-                normalized_candidate = self._normalize_vector(candidate_values)
-                cumulative_trajectory_similarity = self._cosine_similarity(normalized_target, normalized_candidate)
-                
-                # Use growth rate similarity as primary, but fall back to cumulative if growth rates are invalid
-                # Growth rate similarity can be low if movies have very different starting points or patterns
-                # So we use a weighted combination: 70% growth rate, 30% cumulative (if growth rate is valid)
-                if growth_rate_similarity > 0.01:  # Valid growth rate similarity
-                    # Weighted combination favors growth rate but includes cumulative as backup
-                    trend_similarity = (0.7 * growth_rate_similarity) + (0.3 * cumulative_trajectory_similarity)
-                else:
-                    # Fallback to cumulative if growth rates can't be calculated properly
-                    trend_similarity = cumulative_trajectory_similarity
+                # Use DoD% match ratio as the primary similarity metric
+                # This is the percentage of days where DoD% difference is within ±2%
+                # If 70% of days match within ±2%, similarity = 0.70
+                trend_similarity = growth_rate_similarity  # This is now the DoD% match ratio
                 
                 rejection_reasons: List[str] = []
                 
@@ -1898,7 +1905,7 @@ class MoviePerformanceService:
                     'target_final_cumulative_presales': target_final_cumulative,
                     'revenue_ratio': (candidate_overlap_revenue / target_overlap_revenue) if target_overlap_revenue > 0 else 0.0,
                     'valid_comp': len(rejection_reasons) == 0,
-                    'reasons': rejection_reasons or ["Day-by-day growth rate patterns match strongly."],
+                    'reasons': rejection_reasons or [f"Day-by-day DoD% patterns match: {dod_match_ratio:.0%} of days within ±2% (avg difference: {avg_dod_difference:.1f}%)"],
                     'genre': None,
                     'studio_name': None,
                     'rating': None,
@@ -1936,43 +1943,89 @@ class MoviePerformanceService:
         self,
         title: str,
         dbr_start: Optional[int] = None,
-        dbr_end: int = -1,
+        dbr_end: Optional[int] = None,
         release_date: Optional[date] = None
     ) -> List[Dict[str, Any]]:
         """
         Get cumulative presales trajectory for a movie by DBR.
         Returns list of {dbr_value, cumulative_revenue, cumulative_reserved} ordered by DBR ascending.
         
-        This represents cumulative presales as DBR approaches 0 (from -60 → -1),
+        This represents cumulative presales as DBR approaches 0 (from max negative → -1),
         where each point shows the running total of all presales collected up to that DBR date.
         
         IMPORTANT: Only presales data (DBR < 0, date_sh < release_date) is included.
         
+        PREFERS MovieDailyPerformance table (cleaned data) over raw movies table.
+        
+        Uses the FULL available DBR range for each movie (from maximum negative to -1).
+        
         Args:
             title: Movie title
-            dbr_start: Starting DBR (if None, uses maximum available negative DBR in data)
-            dbr_end: Ending DBR (default: -1, only presales DBR < 0)
+            dbr_start: Starting DBR (if None, uses maximum available negative DBR in data for this movie)
+            dbr_end: Ending DBR (if None, uses minimum available negative DBR in data, typically -1)
             
         Returns:
             List of trajectory points with dbr_value, cumulative_revenue, cumulative_reserved
+            Sorted by DBR ascending (most negative to least negative: e.g., -60, -59, ..., -1)
         """
-        # First, try to get from get_cumulative_advance_booking (most accurate)
-        # Use default start if not provided
         if release_date is None:
             release_date = self._get_canonical_release_date(title)
         if not release_date:
             return []
         
-        if dbr_start is None:
-            dbr_start = -60  # Default to wide range
+        # If dbr_start or dbr_end not specified, find the actual range for this movie
+        # This ensures each movie uses its full available DBR range (max negative to -1)
         
+        # PREFER: Get from MovieDailyPerformance (cleaned data) first
+        # This uses the cleaned and pre-calculated cumulative values
+        # get_day_by_day_dbr_trend will automatically find the full range if start_dbr/end_dbr are None
+        try:
+            dbr_trend = self.get_day_by_day_dbr_trend(
+                title,
+                start_dbr=dbr_start,  # None = use max available negative DBR for this movie
+                end_dbr=dbr_end,  # None = use min available negative DBR (typically -1) for this movie
+                use_cache=True,  # This uses MovieDailyPerformance
+                release_date=release_date
+            )
+            
+            if dbr_trend:
+                # Extract trajectory from MovieDailyPerformance data
+                trajectory = []
+                for day_data in dbr_trend:
+                    dbr = day_data.get('dbr_value')
+                    if dbr is None:
+                        continue
+                    
+                    # Filter by DBR constraint: Only presales (DBR < 0) and within range
+                    if dbr >= 0 or dbr < dbr_start or dbr > dbr_end:
+                        continue
+                    
+                    # Use cumulative_revenue from MovieDailyPerformance (already calculated)
+                    cumulative_revenue = day_data.get('cumulative_revenue')
+                    cumulative_reserved = day_data.get('cumulative_reserved', 0)
+                    
+                    if cumulative_revenue is not None:
+                        trajectory.append({
+                            'dbr_value': int(dbr),
+                            'cumulative_revenue': Decimal(str(cumulative_revenue)),
+                            'cumulative_reserved': int(cumulative_reserved or 0)
+                        })
+                
+                # Sort by DBR ascending (most negative to least negative: -60, -59, ..., -1)
+                trajectory.sort(key=lambda x: x['dbr_value'])
+                if trajectory:
+                    return trajectory
+        except Exception as e:
+            logger.warning(f"Error getting trajectory from MovieDailyPerformance for '{title}': {e}")
+        
+        # Fallback: Get from raw movies table via get_cumulative_advance_booking
         try:
             result = self.get_cumulative_advance_booking(title, dbr_start, dbr_end, release_date)
             if 'daily_data' in result and result['daily_data']:
                 trajectory = []
                 for day_data in result['daily_data']:
                     dbr_val = int(day_data.get('dbr_value', 0))
-                    # Filter by DBR constraint: DBR <= 2
+                    # Filter by DBR constraint: DBR <= dbr_end
                     if dbr_val > dbr_end:
                         continue
                     trajectory.append({
@@ -1980,62 +2033,66 @@ class MoviePerformanceService:
                         'cumulative_revenue': Decimal(str(day_data.get('cumulative_revenue', 0))),
                         'cumulative_reserved': int(day_data.get('cumulative_reserved', 0))
                     })
-                # Sort by DBR ascending (most negative to least negative: -60, -59, ..., 2)
+                # Sort by DBR ascending (most negative to least negative: -60, -59, ..., -1)
                 trajectory.sort(key=lambda x: x['dbr_value'])
                 return trajectory
         except Exception as e:
             logger.warning(f"Error getting cumulative advance booking for '{title}': {e}")
         
-        # Fallback: Get DBR-based trend data and calculate cumulative
-        dbr_trend = self.get_day_by_day_dbr_trend(
-            title,
-            start_dbr=dbr_start,
-            end_dbr=dbr_end,
-            use_cache=True,
-            release_date=release_date
-        )
-        
-        if not dbr_trend:
+        # Final fallback: Calculate cumulative from daily data
+        try:
+            dbr_trend = self.get_day_by_day_dbr_trend(
+                title,
+                start_dbr=dbr_start,
+                end_dbr=dbr_end,
+                use_cache=False,  # Force raw data
+                release_date=release_date
+            )
+            
+            if not dbr_trend:
+                return []
+            
+            # Extract trajectory data and calculate cumulative if needed
+            trajectory = []
+            cumulative_revenue = Decimal('0')
+            cumulative_reserved = 0
+            
+            # Sort by DBR first (most negative to least negative)
+            sorted_dbr_trend = sorted(dbr_trend, key=lambda x: x.get('dbr_value', 0))
+            
+            for day_data in sorted_dbr_trend:
+                dbr = day_data.get('dbr_value')
+                if dbr is None:
+                    continue
+                
+                # Filter by DBR constraint: Only presales (DBR < 0)
+                if dbr >= 0:
+                    continue
+                
+                # Get daily revenue (not cumulative)
+                daily_revenue = day_data.get('total_revenue')
+                daily_reserved = day_data.get('total_reserved_seats', 0)
+                
+                # If cumulative_revenue is already available, use it
+                if day_data.get('cumulative_revenue') is not None:
+                    cumulative_revenue = Decimal(str(day_data.get('cumulative_revenue')))
+                    cumulative_reserved = day_data.get('cumulative_reserved', 0)
+                else:
+                    # Calculate cumulative by adding daily revenue
+                    if daily_revenue:
+                        cumulative_revenue += Decimal(str(daily_revenue))
+                    cumulative_reserved += int(daily_reserved or 0)
+                
+                trajectory.append({
+                    'dbr_value': int(dbr),
+                    'cumulative_revenue': cumulative_revenue,
+                    'cumulative_reserved': int(cumulative_reserved)
+                })
+            
+            return trajectory
+        except Exception as e:
+            logger.warning(f"Error calculating cumulative trajectory from daily data for '{title}': {e}")
             return []
-        
-        # Extract trajectory data and calculate cumulative if needed
-        trajectory = []
-        cumulative_revenue = Decimal('0')
-        cumulative_reserved = 0
-        
-        # Sort by DBR first (most negative to least negative)
-        sorted_dbr_trend = sorted(dbr_trend, key=lambda x: x.get('dbr_value', 0))
-        
-        for day_data in sorted_dbr_trend:
-            dbr = day_data.get('dbr_value')
-            if dbr is None:
-                continue
-            
-            # Filter by DBR constraint: Only presales (DBR < 0)
-            if dbr >= 0:
-                continue
-            
-            # Get daily revenue (not cumulative)
-            daily_revenue = day_data.get('total_revenue')
-            daily_reserved = day_data.get('total_reserved_seats', 0)
-            
-            # If cumulative_revenue is already available, use it
-            if day_data.get('cumulative_revenue') is not None:
-                cumulative_revenue = Decimal(str(day_data.get('cumulative_revenue')))
-                cumulative_reserved = day_data.get('cumulative_reserved', 0)
-            else:
-                # Calculate cumulative by adding daily revenue
-                if daily_revenue:
-                    cumulative_revenue += Decimal(str(daily_revenue))
-                cumulative_reserved += int(daily_reserved or 0)
-            
-            trajectory.append({
-                'dbr_value': int(dbr),
-                'cumulative_revenue': cumulative_revenue,
-                'cumulative_reserved': int(cumulative_reserved)
-            })
-        
-        return trajectory
     
     def _calculate_trajectory_similarity(
         self,
@@ -2169,17 +2226,22 @@ class MoviePerformanceService:
     def _get_first_weekend_window_trajectory(
         self,
         title: str,
-        max_dir: int = 2,
+        max_dir: Optional[int] = None,  # Ignored - only DBR is used
         release_date: Optional[date] = None
     ) -> List[Dict[str, Any]]:
         """
-        Build a unified DBR → DIR window (earliest presale through DIR max_dir) with cumulative revenue.
-        Combines presales trajectory with opening-weekend DIR performance.
+        Build DBR trajectory window (earliest presale through -1) with cumulative revenue.
+        
+        Uses ONLY DBR values (Days Before Release, negative values).
+        Uses the FULL available DBR range for each movie:
+        - From maximum negative DBR available (e.g., -60, -45, -30) to -1
+        - Each movie uses its own actual DBR range, not a fixed range
         """
-        # Presales (DBR < 0)
+        # Presales (DBR < 0) - use full available range (None = auto-detect range for this movie)
         dbr_trajectory = self._get_cumulative_presales_trajectory(
             title,
-            dbr_end=-1,
+            dbr_start=None,  # None = use max available negative DBR for this movie
+            dbr_end=None,  # None = use min available negative DBR (typically -1) for this movie
             release_date=release_date
         )
         if not dbr_trajectory:
@@ -2197,34 +2259,13 @@ class MoviePerformanceService:
             previous_cumulative = cumulative_revenue
             
             trajectory.append({
-                'time_value': int(point['dbr_value']),
+                'time_value': int(point['dbr_value']),  # DBR value (negative)
                 'time_label': 'DBR',
                 'cumulative_revenue': cumulative_revenue,
                 'daily_revenue': daily_revenue
             })
         
-        # Opening weekend (DIR >= 1 up to max_dir)
-        if max_dir is None:
-            max_dir = 2
-        dir_trend = self.get_day_by_day_trend(
-            title,
-            start_dir=1,
-            end_dir=max_dir,
-            release_date=release_date
-        )
-        for record in dir_trend:
-            dir_val = record.get('dir_value')
-            if dir_val is None or dir_val <= 0:
-                continue
-            daily_revenue = Decimal(str(record.get('total_revenue', 0) or 0))
-            previous_cumulative = (previous_cumulative or Decimal('0')) + daily_revenue
-            trajectory.append({
-                'time_value': int(dir_val),
-                'time_label': 'DIR',
-                'cumulative_revenue': previous_cumulative,
-                'daily_revenue': daily_revenue
-            })
-        
+        # Sort by DBR ascending (most negative to least negative: -60, -59, ..., -1)
         trajectory.sort(key=lambda x: x['time_value'])
         return trajectory
     
@@ -2344,20 +2385,25 @@ class MoviePerformanceService:
         This compares the RATE of growth (percentage change), not absolute values.
         Movies with similar growth rates are considered similar performers.
         
+        Method: Calculate DoD% for each day transition, compare day-by-day.
+        If DoD% difference is within ±2 percentage points, count as match.
+        
         Example:
-        - Movie A: $100 → $200 → $300 (100% then 50% growth)
-        - Movie B: $1000 → $2000 → $3000 (100% then 50% growth)
-        → These are similar because growth rates match, even though absolute values differ.
+        - Movie A: DBR -45=$100, -44=$200, -43=$300 → DoD%: 100%, 50%
+        - Movie B: DBR -45=$1000, -44=$2000, -43=$3000 → DoD%: 100%, 50%
+        → These are similar because DoD% values match (within ±2% tolerance)
         """
         if not target_values or not candidate_values or len(target_values) != len(candidate_values):
             return {
                 'direction_alignment': 0.0,
                 'median_growth_ratio': 0.0,
                 'avg_growth_ratio': 0.0,
-                'growth_rate_similarity': 0.0
+                'growth_rate_similarity': 0.0,
+                'dod_match_ratio': 0.0,
+                'avg_dod_difference': 0.0
             }
 
-        # Calculate growth rates (percentage change day-by-day)
+        # Calculate growth rates (percentage change day-by-day) as percentages (0.0 = 0%, 1.0 = 100%)
         target_growth_rates = self._calculate_growth_rates(target_values)
         candidate_growth_rates = self._calculate_growth_rates(candidate_values)
         
@@ -2366,13 +2412,41 @@ class MoviePerformanceService:
                 'direction_alignment': 0.0,
                 'median_growth_ratio': 0.0,
                 'avg_growth_ratio': 0.0,
-                'growth_rate_similarity': 0.0
+                'growth_rate_similarity': 0.0,
+                'dod_match_ratio': 0.0,
+                'avg_dod_difference': 0.0
             }
         
-        # Compare growth rate patterns using cosine similarity
-        normalized_target_rates = self._normalize_vector(target_growth_rates)
-        normalized_candidate_rates = self._normalize_vector(candidate_growth_rates)
-        growth_rate_similarity = self._cosine_similarity(normalized_target_rates, normalized_candidate_rates)
+        # PRIMARY METHOD: Compare DoD% day-by-day with ±2% tolerance
+        # Convert growth rates to percentages (multiply by 100)
+        target_dod_percentages = [rate * 100.0 for rate in target_growth_rates]  # 1.0 → 100%
+        candidate_dod_percentages = [rate * 100.0 for rate in candidate_growth_rates]  # 1.0 → 100%
+        
+        matches_within_tolerance = 0
+        total_comparisons = len(target_dod_percentages)
+        dod_differences = []
+        
+        for idx in range(total_comparisons):
+            target_dod = target_dod_percentages[idx]
+            candidate_dod = candidate_dod_percentages[idx]
+            
+            # Calculate absolute difference in percentage points
+            dod_diff = abs(target_dod - candidate_dod)
+            dod_differences.append(dod_diff)
+            
+            # If difference is within ±2 percentage points, count as match
+            if dod_diff <= 2.0:
+                matches_within_tolerance += 1
+        
+        # Calculate match ratio (percentage of days within ±2% tolerance)
+        dod_match_ratio = (matches_within_tolerance / total_comparisons) if total_comparisons > 0 else 0.0
+        
+        # Calculate average DoD% difference
+        avg_dod_difference = (sum(dod_differences) / len(dod_differences)) if dod_differences else 0.0
+        
+        # Growth rate similarity = match ratio (0.0 to 1.0)
+        # If 70% of days match within ±2%, similarity = 0.70
+        growth_rate_similarity = dod_match_ratio
         
         # Also calculate direction alignment and ratios for backward compatibility
         matching_direction = 0
@@ -2402,7 +2476,9 @@ class MoviePerformanceService:
             'direction_alignment': direction_alignment,
             'median_growth_ratio': median_ratio,
             'avg_growth_ratio': avg_ratio,
-            'growth_rate_similarity': growth_rate_similarity
+            'growth_rate_similarity': growth_rate_similarity,  # Now based on ±2% match ratio
+            'dod_match_ratio': dod_match_ratio,  # Percentage of days within ±2%
+            'avg_dod_difference': avg_dod_difference  # Average DoD% difference in percentage points
         }
 
     def _format_growth_alignment_text(self, growth_alignment: Dict[str, float]) -> str:
