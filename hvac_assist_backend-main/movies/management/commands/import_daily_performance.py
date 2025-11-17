@@ -188,6 +188,13 @@ class Command(BaseCommand):
         df['total_seats'] = 0  # Not available in CSV
         df['cumulative_revenue'] = 0  # Will be calculated later
         df['cumulative_reserved'] = 0  # Will be calculated later
+
+        # If the CSV already contains a pre-calculated growth rate column, use it
+        # directly as the day-over-day revenue change (%). This respects the
+        # client-provided Growth(%) logic instead of re-deriving it here.
+        if 'growth_rate' in df.columns:
+            self.stdout.write('   Using pre-calculated growth_rate from CSV as DoD revenue change...')
+            df['dod_revenue_change'] = pd.to_numeric(df['growth_rate'], errors='coerce')
         
         # Calculate average price (if revenue and reserved are available)
         df['avg_price'] = df.apply(
@@ -221,26 +228,36 @@ class Command(BaseCommand):
     def calculate_dod_metrics(self, df):
         """Calculate day-over-day percentage changes"""
         self.stdout.write('📈 Calculating day-over-day metrics...')
-        
+
+        # If DoD revenue change has already been populated from the CSV
+        # (growth_rate column), we keep those values and only calculate
+        # reserved-seat change. This avoids overriding the client-supplied
+        # Growth(%) while still enriching the dataset.
+        use_precomputed_revenue_change = 'dod_revenue_change' in df.columns
+
         # Sort by title, release_date, and DBR value (ascending: -45, -44, ..., -1, 0, 1, 2, ...)
         # This ensures DoD calculations compare consecutive days in correct chronological order
         df = df.sort_values(['Title', 'release_date_parsed', 'dbr_value'], na_position='last')
         
         # Group by title and release_date
         grouped = df.groupby(['Title', 'release_date_parsed'])
-        
-        # Calculate DoD revenue change
-        df['prev_revenue'] = grouped['total_revenue'].shift(1)
-        df['dod_revenue_change'] = df.apply(
-            lambda row: (
-                ((row['total_revenue'] - row['prev_revenue']) / row['prev_revenue'] * 100)
-                if pd.notna(row['prev_revenue']) and row['prev_revenue'] > 0
-                else None
-            ),
-            axis=1
-        )
-        
-        # Calculate DoD reserved change
+
+        # Only compute revenue DoD change if it was NOT pre-populated from CSV
+        if not use_precomputed_revenue_change:
+            df['prev_revenue'] = grouped['total_revenue'].shift(1)
+            df['dod_revenue_change'] = df.apply(
+                lambda row: (
+                    ((row['total_revenue'] - row['prev_revenue']) / row['prev_revenue'] * 100)
+                    if pd.notna(row['prev_revenue']) and row['prev_revenue'] > 0
+                    else None
+                ),
+                axis=1
+            )
+        else:
+            # Still create the column so later drop() works consistently
+            df['prev_revenue'] = np.nan
+
+        # Calculate DoD reserved change in all cases
         df['prev_reserved'] = grouped['total_reserved_seats'].shift(1)
         df['dod_reserved_change'] = df.apply(
             lambda row: (

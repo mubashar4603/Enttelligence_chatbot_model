@@ -820,12 +820,24 @@ class MoviePerformanceService:
         Prefers the release with the highest first weekend revenue (DIR -1, 1, 2).
         Falls back to the earliest release date if first weekend data is missing.
         """
+        # 1) Prefer release dates from Movie table (full showtime data)
         release_dates = list(
             Movie.objects
             .filter(title__iexact=title)
             .values_list('release_date', flat=True)
             .distinct()
         )
+        
+        # 2) If Movie table has no entry for this title (CSV-only title),
+        #    fall back to MovieDailyPerformance, which is populated from
+        #    AI_Data_Dump_All_Titles.
+        if not release_dates:
+            release_dates = list(
+                MovieDailyPerformance.objects
+                .filter(title__iexact=title)
+                .values_list('release_date', flat=True)
+                .distinct()
+            )
         
         release_dates = sorted([rd for rd in release_dates if rd])
         if not release_dates:
@@ -1770,16 +1782,44 @@ class MoviePerformanceService:
         target_final_cumulative = float(target_window[-1]['cumulative_revenue']) if target_window else 0.0
         result['target_final_cumulative_presales'] = target_final_cumulative
         
-        all_titles = list(
-            Movie.objects
+        # Use MovieDailyPerformance as the primary source of candidate titles,
+        # since this table contains the cleaned cumulative revenue and growth
+        # metrics used for trajectory analysis.
+        #
+        # PERFORMANCE NOTE:
+        # We intentionally *do not* filter by revenue scale here so that
+        # low-grossing and high-grossing films with similar growth patterns
+        # can still be considered as comps. Instead, we simply prioritise
+        # titles with more presales data points and cap the total number of
+        # candidates to keep the query fast.
+        
+        # Filter to recent movies only (last 3 years) to reduce candidate pool
+        three_years_ago = date.today() - timedelta(days=3*365)
+        
+        candidate_qs = (
+            MovieDailyPerformance.objects
             .exclude(title__iexact=target_title)
-            .values_list('title', flat=True)
-            .distinct()
+            .filter(release_date__gte=three_years_ago)  # Only recent movies
+            .values('title')
+            .annotate(point_count=Count('id'))
+        )
+
+        # To guarantee responsiveness within 60s timeout, cap the number of candidate titles we
+        # evaluate per query. Sort by number of presales points so we prefer
+        # movies with richer DBR trajectories (better growth comparison).
+        MAX_CANDIDATES = 40  # Reduced from 60 to stay well within 60s timeout
+        MAX_VALID_MATCHES = 10  # Early exit if we find enough good matches (reduced from 15)
+        
+        candidate_qs = candidate_qs.order_by('-point_count')[:MAX_CANDIDATES]
+        all_titles = [row['title'] for row in candidate_qs]
+
+        logger.info(
+            f"   Evaluating {len(all_titles)} candidate movies for '{target_title}' "
+            f"(capped at {MAX_CANDIDATES}, filtered to releases since {three_years_ago})"
         )
         
-        logger.info(f"   Evaluating {len(all_titles)} candidate movies for '{target_title}'")
-        
         processed_titles = set()
+        valid_matches_found = 0
         
         for candidate_title in all_titles:
             if not candidate_title:
@@ -1828,15 +1868,17 @@ class MoviePerformanceService:
                 overlap_start = common_keys[0]
                 overlap_end = common_keys[-1]
                 
-                # For DoD% calculation, use DAILY revenue (not cumulative)
-                # Example: DBR -45=$100, -44=$200, -43=$300 → DoD%: (200-100)/100=100%, (300-200)/200=50%
-                target_daily_values = [float(target_window_map[key].get('daily_revenue', 0)) for key in common_keys]
+                # For Growth(%) calculation, use CUMULATIVE revenue values
+                # This matches the client definition:
+                #   Growth(%) = (Today's Cumulative / Yesterday's Cumulative - 1) * 100
+                # Example: cumulative -44=$120, -43=$150 → Growth% = (150 - 120) / 120 * 100 = 25%
                 candidate_window_map = {point['time_value']: point for point in candidate_window}
-                candidate_daily_values = [float(candidate_window_map[key].get('daily_revenue', 0)) for key in common_keys]
-                
-                # Also keep cumulative for revenue scale comparison
-                target_cumulative_values = [float(target_window_map[key]['cumulative_revenue']) for key in common_keys]
-                candidate_cumulative_values = [float(candidate_window_map[key]['cumulative_revenue']) for key in common_keys]
+                target_cumulative_values = [
+                    float(target_window_map[key]['cumulative_revenue']) for key in common_keys
+                ]
+                candidate_cumulative_values = [
+                    float(candidate_window_map[key]['cumulative_revenue']) for key in common_keys
+                ]
                 
                 target_start_value = target_cumulative_values[0]
                 candidate_start_value = candidate_cumulative_values[0]
@@ -1846,15 +1888,29 @@ class MoviePerformanceService:
                 target_overlap_revenue = target_end_value - target_start_value
                 candidate_overlap_revenue = candidate_end_value - candidate_start_value
                 candidate_final_cumulative = float(candidate_window[-1]['cumulative_revenue']) if candidate_window else 0.0
+
+                # Secondary metric: similarity of the cumulative trajectories themselves
+                # (shape-based, independent of absolute level), for reporting.
+                try:
+                    normalized_target = self._normalize_vector(target_cumulative_values)
+                    normalized_candidate = self._normalize_vector(candidate_cumulative_values)
+                    cumulative_trajectory_similarity = self._cosine_similarity(
+                        normalized_target, normalized_candidate
+                    )
+                except Exception:
+                    cumulative_trajectory_similarity = 0.0
                 
-                # Calculate DoD% similarity using DAILY revenue (day-over-day change)
-                growth_alignment = self._analyze_growth_alignment(target_daily_values, candidate_daily_values)
+                # Calculate Growth(%) similarity using cumulative revenue (day-over-day change of cumulative)
+                # This compares how fast presales are growing day-over-day, not absolute values.
+                # Method: Calculate DoD% on cumulative values and compare day-by-day with ±2% tolerance.
+                # Example: Movie A cumulative: 100 → 200 (100% growth) vs Movie B: 1,000 → 2,000 (100% growth)
+                # → Similar because Growth% matches (within ±2%).
+                growth_alignment = self._analyze_growth_alignment(
+                    target_cumulative_values,
+                    candidate_cumulative_values
+                )
                 
-                # PRIMARY METRIC: Use DoD% similarity (day-by-day percentage change comparison)
-                # This compares how fast presales are growing day-over-day, not absolute values
-                # Method: Calculate DoD% for each day, compare day-by-day with ±2% tolerance
-                # Example: Movie A: -45=$100, -44=$200 (100% growth) vs Movie B: -45=$1000, -44=$2000 (100% growth)
-                # → Similar because DoD% matches (within ±2%)
+                # PRIMARY METRIC: Use Growth% (DoD% on cumulative) match ratio as similarity metric
                 growth_rate_similarity = growth_alignment.get('growth_rate_similarity', 0.0)
                 dod_match_ratio = growth_alignment.get('dod_match_ratio', 0.0)
                 avg_dod_difference = growth_alignment.get('avg_dod_difference', 0.0)
@@ -1876,18 +1932,14 @@ class MoviePerformanceService:
                         f"Trend similarity {trend_similarity:.2f} below threshold {min_correlation:.2f}"
                     )
                 
-                # Filter by revenue scale - reject candidates with very different revenue scales
-                # This ensures "best comp titles" are similar in both trajectory AND scale
-                if target_overlap_revenue > 0 and candidate_overlap_revenue > 0:
-                    revenue_ratio = candidate_overlap_revenue / target_overlap_revenue
-                    if revenue_ratio < min_revenue_ratio:
-                        rejection_reasons.append(
-                            f"Revenue scale too low: {revenue_ratio:.2f}x target (need ≥{min_revenue_ratio:.2f}x)"
-                        )
-                    elif revenue_ratio > max_revenue_ratio:
-                        rejection_reasons.append(
-                            f"Revenue scale too high: {revenue_ratio:.2f}x target (need ≤{max_revenue_ratio:.2f}x)"
-                        )
+                # Revenue scale is recorded for context but no longer used as a hard filter.
+                # This allows movies with very different absolute revenue (e.g. $100 vs $1,000)
+                # but similar growth patterns to still be considered comp titles.
+                revenue_ratio = (
+                    (candidate_overlap_revenue / target_overlap_revenue)
+                    if target_overlap_revenue > 0
+                    else 0.0
+                )
                 
                 candidate_record = {
                     'title': candidate_title,
@@ -1903,7 +1955,7 @@ class MoviePerformanceService:
                     'target_first_weekend_revenue_numeric': max(target_overlap_revenue, 0.0),
                     'target_first_weekend_revenue': self._format_currency(target_overlap_revenue),
                     'target_final_cumulative_presales': target_final_cumulative,
-                    'revenue_ratio': (candidate_overlap_revenue / target_overlap_revenue) if target_overlap_revenue > 0 else 0.0,
+                    'revenue_ratio': revenue_ratio,
                     'valid_comp': len(rejection_reasons) == 0,
                     'reasons': rejection_reasons or [f"Day-by-day DoD% patterns match: {dod_match_ratio:.0%} of days within ±2% (avg difference: {avg_dod_difference:.1f}%)"],
                     'genre': None,
@@ -1924,6 +1976,13 @@ class MoviePerformanceService:
                     candidate_record['rating'] = movie_sample.rating
                 
                 result['candidates'].append(candidate_record)
+                
+                # Early exit if we've found enough valid matches (performance optimization)
+                if candidate_record.get('valid_comp', False):
+                    valid_matches_found += 1
+                    if valid_matches_found >= MAX_VALID_MATCHES:
+                        logger.info(f"   Early exit: Found {valid_matches_found} valid matches (target: {MAX_VALID_MATCHES})")
+                        break
             
             except Exception as exc:
                 logger.warning(f"Error analyzing comp candidate '{candidate_title}': {exc}")
@@ -1996,8 +2055,12 @@ class MoviePerformanceService:
                     if dbr is None:
                         continue
                     
-                    # Filter by DBR constraint: Only presales (DBR < 0) and within range
-                    if dbr >= 0 or dbr < dbr_start or dbr > dbr_end:
+                    # Filter by DBR constraint: Only presales (DBR < 0) and within optional range
+                    if dbr >= 0:
+                        continue
+                    if dbr_start is not None and dbr < dbr_start:
+                        continue
+                    if dbr_end is not None and dbr > dbr_end:
                         continue
                     
                     # Use cumulative_revenue from MovieDailyPerformance (already calculated)
@@ -2024,9 +2087,14 @@ class MoviePerformanceService:
             if 'daily_data' in result and result['daily_data']:
                 trajectory = []
                 for day_data in result['daily_data']:
-                    dbr_val = int(day_data.get('dbr_value', 0))
-                    # Filter by DBR constraint: DBR <= dbr_end
-                    if dbr_val > dbr_end:
+                    dbr_val_raw = day_data.get('dbr_value', None)
+                    if dbr_val_raw is None:
+                        continue
+                    dbr_val = int(dbr_val_raw)
+                    # Filter by optional DBR constraints
+                    if dbr_start is not None and dbr_val < dbr_start:
+                        continue
+                    if dbr_end is not None and dbr_val > dbr_end:
                         continue
                     trajectory.append({
                         'dbr_value': dbr_val,
@@ -2614,19 +2682,21 @@ class MoviePerformanceService:
         lines.append("")
         
         if valid_candidates:
-            lines.append("**Accepted Slope Matches:**")
+            lines.append(f"**Best Comp Titles ({len(valid_candidates)} matches):**")
             for idx, comp in enumerate(valid_candidates, 1):
-                growth_text = self._format_growth_alignment_text(comp.get('growth_alignment', {}))
+                growth_rate_sim = comp.get('growth_rate_similarity', comp.get('trend_similarity', 0.0))
+                dod_match_ratio = comp.get('growth_alignment', {}).get('dod_match_ratio', 0.0)
+                avg_dod_diff = comp.get('growth_alignment', {}).get('avg_dod_difference', 0.0)
                 final_millions = float(comp.get('final_cumulative_presales', 0.0)) / 1_000_000
                 fw_millions = comp.get('first_weekend_revenue_numeric', 0.0) / 1_000_000
                 target_fw_millions = comp.get('target_first_weekend_revenue_numeric', 0.0) / 1_000_000
                 revenue_ratio = comp.get('revenue_ratio', 0.0)
                 lines.append(f"{idx}. **{comp['title']}**")
-                lines.append(f"   - Overlap: {comp['overlap_window']} | {comp.get('shared_points', 0)} matching points ({comp['overlap_ratio']:.0%} of DBR window)")
-                lines.append(f"   - Slope Alignment: {growth_text}")
-                lines.append(f"   - Growth Rate Similarity (day-by-day % growth): {comp.get('growth_rate_similarity', comp.get('trend_similarity', 0.0)):.3f}")
-                lines.append(f"   - Trend Similarity (cumulative trajectory): {comp.get('cumulative_trajectory_similarity', comp.get('trend_similarity', 0.0)):.3f}")
-                lines.append(f"   - First Weekend Revenue: ${fw_millions:.2f}M vs target ${target_fw_millions:.2f}M (ratio: {revenue_ratio:.2f}x)")
+                lines.append(f"   - Growth Rate Similarity: {growth_rate_sim:.1%} (day-by-day growth % match)")
+                if dod_match_ratio > 0:
+                    lines.append(f"   - Daily Growth Match: {dod_match_ratio:.0%} of days within ±2% tolerance (avg difference: {avg_dod_diff:.1f}%)")
+                lines.append(f"   - DBR Overlap: {comp['overlap_window']} ({comp.get('shared_points', 0)} matching days)")
+                lines.append(f"   - First Weekend Revenue: ${fw_millions:.2f}M")
                 lines.append(f"   - Final Cumulative Presales: ${final_millions:.2f}M")
                 if comp.get('genre'):
                     lines.append(f"   - Genre: {comp['genre']}")
@@ -2634,20 +2704,9 @@ class MoviePerformanceService:
                     lines.append(f"   - Studio: {comp['studio_name']}")
                 lines.append("")
         else:
-            lines.append("**Accepted Slope Matches:**")
-            lines.append("No trajectories cleared the overlap + similarity thresholds.")
+            lines.append("**Best Comp Titles:**")
+            lines.append("No movies found with matching day-by-day growth rate patterns.")
             lines.append("")
-        
-        rejected = [c for c in candidates if not c.get('valid_comp')]
-        if rejected:
-            lines.append("**Evaluated But Rejected:**")
-            for comp in rejected:
-                reason = "; ".join(comp.get('reasons', [])) or "Insufficient overlap or slope similarity."
-                growth_text = self._format_growth_alignment_text(comp.get('growth_alignment', {}))
-                lines.append(f"- **{comp['title']}** — {reason}")
-                lines.append(f"  • Overlap: {comp['overlap_window']} ({comp['overlap_ratio']:.0%}, {comp.get('shared_points', 0)} shared points)")
-                lines.append(f"  • Slope Alignment: {growth_text}")
-                lines.append("")
         
         return "\n".join(lines)
     
