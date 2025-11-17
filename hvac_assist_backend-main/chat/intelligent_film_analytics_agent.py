@@ -27,7 +27,16 @@ from langchain.prompts import PromptTemplate
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'hvac_assist_backend.settings')
 django.setup()
 
-from movies.models import Movie, FilmPerformanceSummary, TheaterPerformance, MarketAnalysis, ComparativeAnalysis, EmbeddingChunk, QueryLog
+from movies.models import (
+    Movie,
+    FilmPerformanceSummary,
+    TheaterPerformance,
+    MarketAnalysis,
+    ComparativeAnalysis,
+    EmbeddingChunk,
+    QueryLog,
+    MovieDailyPerformance,
+)
 from movies.performance_service import MoviePerformanceService
 
 # Setup logging
@@ -687,44 +696,45 @@ Analysis Type: {query_intent.get('analysis_type', 'general')}"""
             # Customize instructions based on query type
             query_type_str = query_intent.get('query_type', 'general')
             if query_type_str == 'comp_titles' or query_type_str == 'performance_comparison':
-                instructions = """You are analyzing comparable movie titles based on their day-by-day growth patterns. Your goal is to explain in clear, natural language why certain movies are considered similar performers.
+                instructions = """You are analyzing comparable movie titles based on their day-by-day cumulative sales estimate CHANGE RATES (growth rates). Your goal is to explain in clear, natural language why certain movies are considered similar performers.
 
-KEY CONCEPT - Growth Rate Similarity:
-Movies are compared based on their DAY-BY-DAY GROWTH PERCENTAGE RATES, not absolute revenue values. 
-For example: If Movie A grows from $100 to $200 (100% growth) and Movie B grows from $1000 to $2000 (100% growth), they have the SAME growth rate even though Movie B has 10x the revenue.
+CRITICAL CONCEPT - Growth Rate Matching (Not Revenue Scale):
+Movies are compared based on their DAY-BY-DAY CUMULATIVE SALES ESTIMATE CHANGE RATES (growth percentages), NOT absolute revenue values. 
 
-Formula: Growth Rate = (Value_today - Value_yesterday) / Value_yesterday
+The Logic:
+- We calculate the day-by-day percentage change in cumulative revenue for each movie
+- Formula: Growth Rate = (Cumulative_today - Cumulative_yesterday) / Cumulative_yesterday * 100
+- Example: Movie A: $100 → $200 → $300 (100% then 50% growth) vs Movie B: $1000 → $2000 → $3000 (100% then 50% growth)
+- These are SIMILAR because their day-by-day growth RATES match, even though Movie B has 10x the revenue
 
-This means a movie earning $100M can be similar to a movie earning $10M if they both grow at the same percentage rate day-by-day.
+This means a movie earning $100M can be similar to a movie earning $10M if they both grow at the same percentage rate day-by-day. The absolute revenue scale doesn't matter - only the growth pattern matters.
 
 Your Response Should:
-1. Start with a clear, conversational summary: "Based on analyzing day-by-day growth patterns, here are the movies performing most similarly to [target movie]..."
+1. Start with a clear explanation of the methodology:
+   "I analyzed movies based on their day-by-day cumulative sales estimate change rates (growth percentages). Movies are considered similar if their daily growth rates match, regardless of absolute revenue scale. Here are the movies performing most similarly to [target movie]..."
 
-2. For VALID matches (valid_comp = true):
-   - Explain WHY they're similar in natural language: "These movies show similar growth patterns because..."
-   - Mention the growth rate similarity score and what it means (e.g., "0.85 means 85% similarity in day-by-day growth rates")
-   - Explain the revenue scale comparison (e.g., "Movie X earned 2.3x more than the target, which is within the acceptable 0.3x to 3.0x range")
-   - Describe the overlap window (e.g., "Both movies have presales data from DBR -25 through DIR 2, giving us 100% overlap to compare")
+2. For each VALID match (only show valid_comp = true titles):
+   - Explain WHY they're similar: "This movie shows similar growth patterns because..."
+   - Emphasize the GROWTH RATE SIMILARITY: "The growth rate similarity of X% means that X% of days had matching growth percentages (within ±2% tolerance)"
+   - Explain what this means: "For example, if both movies show 25% growth on day -30, 15% growth on day -29, etc., they're considered similar performers"
+   - Mention DBR overlap only as context: "We compared X matching days of presales data (from DBR -Y to -Z)"
    - Use natural language: "Both movies show a gradual build-up in presales, then a sharp acceleration close to release day"
 
-3. For REJECTED titles (valid_comp = false):
-   - Explain in plain language why they don't match: "While [Movie] has a similar overall trajectory, it was rejected because..."
-   - Use the rejection reasons provided (e.g., "the revenue scale is too different - Movie X earned 15x more, which is outside the acceptable range")
-   - Be helpful: "This movie might be useful for understanding trajectory patterns, but the revenue scale difference makes it less suitable as a direct comp"
+3. DO NOT mention rejected titles or why they were rejected. Only show valid matches.
 
 4. Write naturally and conversationally:
    - Use phrases like "This suggests...", "What this means is...", "In practical terms..."
-   - Avoid jargon unless you explain it
-   - Use analogies when helpful: "Think of it like two runners - one starts ahead but they're both accelerating at the same rate"
+   - Explain the growth rate logic clearly: "The key insight is that we're comparing how fast presales are growing day-by-day, not how much total revenue they're generating"
+   - Use analogies: "Think of it like two runners - one starts ahead but they're both accelerating at the same rate, so they're similar performers"
    - Make it accessible to both analysts and executives
 
 5. Structure your response:
-   - Brief introduction explaining the analysis method
-   - List of valid comps with clear explanations
-   - Brief mention of rejected titles and why (if relevant)
-   - Summary insight about what patterns you see
+   - Brief introduction explaining the growth rate matching methodology
+   - List of valid comps with clear explanations of why they match (focus on growth rate similarity)
+   - Summary insight about what growth patterns you see
 
-6. Never fabricate metrics. Use only the numbers provided in the context."""
+6. Never fabricate metrics. Use only the numbers provided in the context.
+7. Always emphasize that matching is based on GROWTH RATE, not revenue scale."""
             else:
                 instructions = """1. Analyze the data thoroughly and provide detailed insights
 2. Explain WHY the movie is performing this way based on the metrics
@@ -2644,15 +2654,23 @@ If you implement these changes, you could potentially increase total revenue by 
                     extracted = match.group(1).strip()
                     # Clean up extracted title (remove common words)
                     extracted = re.sub(r'\s+(is|are|the|a|an)\s+', ' ', extracted).strip()
-                    # Try to find movie in database
+                    # Try to find movie in Movie table first
                     movie = Movie.objects.filter(title__icontains=extracted).first()
                     if movie:
                         movie_titles = [movie.title]
                         break
-                    # Also try partial match if exact match fails
+                    # If not found, try MovieDailyPerformance (CSV-based titles)
                     if not movie_titles:
-                        all_movies = Movie.objects.values_list('title', flat=True).distinct()
-                        for db_movie in all_movies:
+                        mdp = MovieDailyPerformance.objects.filter(title__icontains=extracted).values_list('title', flat=True).distinct().first()
+                        if mdp:
+                            movie_titles = [mdp]
+                            break
+                    # Also try partial match across both sources if exact match fails
+                    if not movie_titles:
+                        all_movie_titles = set(Movie.objects.values_list('title', flat=True).distinct())
+                        all_mdp_titles = set(MovieDailyPerformance.objects.values_list('title', flat=True).distinct())
+                        all_titles = list(all_movie_titles.union(all_mdp_titles))
+                        for db_movie in all_titles:
                             if extracted.lower() in db_movie.lower() or db_movie.lower() in extracted.lower():
                                 movie_titles = [db_movie]
                                 break
@@ -2679,22 +2697,6 @@ If you implement these changes, you could potentially increase total revenue by 
         try:
             # Initialize performance service
             perf_service = MoviePerformanceService()
-            
-            # Get target movie data
-            target_movie = Movie.objects.filter(
-                title__icontains=movie_title
-            ).first()
-            
-            if not target_movie:
-                return {
-                    'type': 'performance_comparison',
-                    'message': f"I don't have data for '{movie_title}' in my database. I can provide comparisons for movies like: Twisters, Dune: Part Two, Joker: Folie a Deux, Monkey Man, Homestead, Weapons, Superman, Fantastic Four, and Jurassic World Rebirth.",
-                    'data': None,
-                    'sources': None,
-                    'retrieved_count': 0,
-                    'accuracy': '100%',
-                    'query_type': 'performance_comparison'
-                }
             
             # Use trajectory-based comp titles method (same logic as comp titles)
             # This uses day-by-day growth rate similarity, not just first weekend performance
@@ -2758,11 +2760,26 @@ If you implement these changes, you could potentially increase total revenue by 
             target_final = target_trajectory[-1]['cumulative_revenue'] if target_trajectory else Decimal('0')
             target_first_weekend_revenue = comp_result.get('target_first_weekend_revenue', 0.0) / 1_000_000 if isinstance(comp_result, dict) else 0.0
             
+            # Get target movie metadata from Movie or MovieDailyPerformance
+            target_movie = Movie.objects.filter(title__icontains=movie_title).first()
+            target_genre = 'Unknown'
+            target_rating = 'Unknown'
+            if target_movie:
+                target_genre = target_movie.genre or 'Unknown'
+                target_rating = target_movie.rating or 'Unknown'
+            else:
+                # Try to get from MovieDailyPerformance (CSV-based titles)
+                mdp = MovieDailyPerformance.objects.filter(title__icontains=movie_title).first()
+                if mdp:
+                    # MovieDailyPerformance doesn't have genre/rating, so we'll use Unknown
+                    # In the future, we could add these fields to MovieDailyPerformance
+                    pass
+            
             # Build comprehensive data structure for LLM and return
             data = {
                 'target_movie': movie_title,
-                'target_genre': target_movie.genre or 'Unknown',
-                'target_rating': target_movie.rating or 'Unknown',
+                'target_genre': target_genre,
+                'target_rating': target_rating,
                 'target_first_weekend_revenue_millions': target_first_weekend_revenue,
                 'target_final_cumulative_presales_millions': float(target_final) / 1_000_000 if target_final else 0.0,
                 'similar_movies': similar_movies,
