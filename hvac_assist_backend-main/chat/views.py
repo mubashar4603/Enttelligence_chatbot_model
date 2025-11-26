@@ -1,6 +1,8 @@
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
+
+from similarity_engine.movie_similarity_bot_V2 import ask
 from .models import Conversation, Message
 from .serializers import MessageSerializer, ConversationSerializer
 from rest_framework import generics, permissions
@@ -119,21 +121,26 @@ class MessageViewSet(viewsets.ModelViewSet):
 
         try:
             # Initialize Intelligent Film Analytics Agent
-            intelligent_agent = get_intelligent_agent()
+            # intelligent_agent = get_intelligent_agent()
+            #
+            # # Process the query with intelligent AI reasoning
+            # query_response = intelligent_agent.process_intelligent_query(
+            #     message.content,
+            #     user=request.user,
+            #     conversation=conversation
+            # )
 
-            # Process the query with intelligent AI reasoning
-            query_response = intelligent_agent.process_intelligent_query(
-                message.content, 
-                user=request.user, 
-                conversation=conversation
-            )
+            # import movie_curve_similarity
+
+            # query_response = movie_curve_similarity.query(message.content)
+            query_response = ask(message.content)
 
             # Get the response message - ALWAYS natural language, no JSON
             bot_reply = query_response.get("message", "")
             
             # If there's no message but there's an error, use that instead
             if not bot_reply and query_response.get("error"):
-                bot_reply = query_response.get("message", f"I'm Entelligence AI Assistant. I encountered an issue: {query_response.get('error')}")
+                bot_reply = query_response.get("error")
                 
             # IMPORTANT: Never include raw data/JSON in conversational responses
             # The message should already be formatted naturally by the processor
