@@ -2,7 +2,7 @@
 .ai/model/Llama-3.2-8B-Instruct-Q5_K_M.gguf
 
 .hvac_assist_backend-main/chat/enttelligence_10M_records.csv
-
+/hvac_assist_backend-main/similarity_engine/similarity_graphs/*
 .hvac_assist_backend-main/.env
 
 *.pyc

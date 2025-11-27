@@ -6,23 +6,23 @@ import os
 import json
 import requests
 import re
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from pinecone import Pinecone, ServerlessSpec
 import time
 
 warnings.filterwarnings("ignore")
-os.makedirs("similarity_graphs", exist_ok=True)
 
 # ==================== CONFIGURATION ====================
 OLLAMA_MODEL = "llama3:8b"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 DEFAULT_K = 5
-MIN_SIMILARITY_SCORE = 0.99
+MIN_SIMILARITY_SCORE = 0.95  # Changed from 0.99 to 0.95
+MAX_DAILY_GROWTH_DIFF = 10.0 # Maximum 5% difference per day (increased from 2% for real-world variance)
 
 # ==================== PINECONE CONFIGURATION ====================
 PINECONE_API_KEY = "pcsk_3DmuwS_5NT3SrpWJW9cweaEduTnvociJPwvVQFBYaJsbdc88joQoKk3JvSmRVJ6jSeiUfZ"
-PINECONE_INDEX_NAME = "movie-similarity-2"
-PINECONE_NAMESPACE = "movie-growth-vectors-2"
+PINECONE_INDEX_NAME = "movie-similarity-3"  # Changed to v3
+PINECONE_NAMESPACE = "movie-growth-vectors-3"  # Changed to v3
 VECTOR_DIMENSION = 60
 
 # ==================== GLOBAL VARIABLES ====================
@@ -94,6 +94,8 @@ def upload_vectors_to_pinecone(embeddings_array, titles_list, metadata_list):
                 "title": titles_list[i],
                 "total_revenue": float(metadata_list[i]["total_revenue"]),
                 "active_days": int(metadata_list[i]["active_days"]),
+                "dbr_start": int(metadata_list[i]["dbr_start"]),  # NEW
+                "dbr_end": int(metadata_list[i]["dbr_end"]),  # NEW
                 "index": i
             }
 
@@ -190,27 +192,100 @@ def build_movie_database():
             if total_rev < 1000:
                 continue
 
+            # Get DBR range
+            dbr_start = int(active['day'].min())
+            dbr_end = int(active['day'].max())
+
             curves.append(growth.astype(np.float32))
             valid_titles.append(title)
             metadata.append({
                 'title': title,
                 'total_revenue': float(total_rev),
-                'active_days': len(active)
+                'active_days': len(active),
+                'dbr_start': dbr_start,
+                'dbr_end': dbr_end,
+                'growth_vector': growth.tolist()
             })
 
         print(f"✓ Growth curves built for {len(curves)} movies")
 
-        print("🔄 Normalizing embeddings...")
+        # CRITICAL CHANGE: Remove L2 normalization - keep raw values
+        print("🔄 Preparing embeddings (raw growth values)...")
         curves = np.array(curves)
-        embeddings = curves / (np.linalg.norm(curves, axis=1, keepdims=True) + 1e-8)
-        embeddings = embeddings.astype('float32')
+        embeddings = curves.astype('float32')  # NO NORMALIZATION!
 
         print(f"✓ Fresh embeddings created! Shape: {embeddings.shape}")
+        print(f"⚠️  V3 NOTE: Using RAW growth values (no normalization)")
         return True
 
     except Exception as e:
         print(f"❌ Database build failed: {e}")
         return False
+
+
+# ==================== DBR OVERLAP DETECTION ====================
+def find_dbr_overlap(query_dbr_range: Tuple[int, int], candidate_dbr_range: Tuple[int, int]) -> Tuple[int, int, int]:
+    """
+    Find overlapping DBR range between two movies
+    Returns: (overlap_start, overlap_end, overlap_days)
+    """
+    query_start, query_end = query_dbr_range
+    cand_start, cand_end = candidate_dbr_range
+
+    overlap_start = max(query_start, cand_start)
+    overlap_end = min(query_end, cand_end)
+
+    if overlap_start <= overlap_end:
+        overlap_days = overlap_end - overlap_start + 1
+        return overlap_start, overlap_end, overlap_days
+    else:
+        return 0, 0, 0  # No overlap
+
+
+# ==================== DAY-BY-DAY VALIDATION ====================
+def validate_daily_growth_similarity(
+    query_growth: np.ndarray,
+    candidate_growth: np.ndarray,
+    max_diff: float = MAX_DAILY_GROWTH_DIFF
+) -> Dict[str, Any]:
+    """
+    Validate that day-by-day growth difference is within threshold
+    Returns validation metrics
+    """
+    # Calculate absolute difference for each day
+    daily_diffs = np.abs(query_growth - candidate_growth)
+    
+    # Find non-zero days (active days)
+    active_mask = (query_growth != 0) | (candidate_growth != 0)
+    active_diffs = daily_diffs[active_mask]
+    
+    if len(active_diffs) == 0:
+        return {
+            'valid': False,
+            'max_diff': 0.0,
+            'avg_diff': 0.0,
+            'days_within_threshold': 0,
+            'total_active_days': 0,
+            'pass_rate': 0.0
+        }
+    
+    max_daily_diff = float(np.max(active_diffs))
+    avg_daily_diff = float(np.mean(active_diffs))
+    days_within_threshold = int(np.sum(active_diffs <= max_diff))
+    total_active_days = len(active_diffs)
+    pass_rate = (days_within_threshold / total_active_days) * 100.0
+    
+    # Valid if ALL active days are within threshold
+    is_valid = max_daily_diff <= max_diff
+    
+    return {
+        'valid': is_valid,
+        'max_diff': round(max_daily_diff, 2),
+        'avg_diff': round(avg_daily_diff, 2),
+        'days_within_threshold': days_within_threshold,
+        'total_active_days': total_active_days,
+        'pass_rate': round(pass_rate, 1)
+    }
 
 
 # ==================== SYSTEM INITIALIZATION ====================
@@ -222,7 +297,7 @@ def initialize_system():
         if not initialize_pinecone():
             return False
 
-        print("\n🔄 Building FRESH embeddings from CSV...\n")
+        print("\n🔄 Building FRESH embeddings from CSV (V3 - No Normalization)...\n")
         if not build_movie_database():
             return False
 
@@ -237,9 +312,9 @@ def initialize_system():
             'cumulative_revenue': 'cumulative_revenue'
         })
         df_full['title'] = df_full['title'].astype(str).str.strip()
-        df_full = df_full[['title', 'dbr', 'daily_revenue', 'cumulative_revenue', "Growth (%)"]]
 
-        print(f"\n✅ System ready! {len(valid_titles)} movies indexed\n")
+        print(f"\n✅ System ready! {len(valid_titles)} movies indexed")
+        print(f"📊 V3 Features: 95% threshold + ±{MAX_DAILY_GROWTH_DIFF}% daily validation\n")
         return True
 
     except Exception as e:
@@ -305,7 +380,7 @@ def find_movie_in_database(movie_title: str) -> Optional[str]:
 
 # ==================== SEARCH FUNCTION ====================
 def search_similar_movies(movie_title: str, k: int = DEFAULT_K) -> Dict[str, Any]:
-    """Search for similar movies using Pinecone"""
+    """Search for similar movies using Pinecone with day-by-day validation"""
     try:
         if not movie_title or not isinstance(movie_title, str):
             return {
@@ -329,22 +404,23 @@ def search_similar_movies(movie_title: str, k: int = DEFAULT_K) -> Dict[str, Any
         # Get query movie data
         query_idx = valid_titles.index(matched_title)
         query_metadata = metadata[query_idx]
-        query_growth = embeddings[query_idx] * (np.linalg.norm(embeddings[query_idx]) + 1e-8)
+        query_growth = embeddings[query_idx]  # Raw growth values (no denormalization needed)
 
+        query_dbr_range = (query_metadata['dbr_start'], query_metadata['dbr_end'])
         query_positive_days = int(np.sum(query_growth > 0))
         query_avg_growth = float(np.mean(query_growth[query_growth > 0]) if np.any(query_growth > 0) else 0)
 
-        # Search in Pinecone
+        # Search in Pinecone (get more candidates for filtering)
         query_vector = embeddings[query_idx].tolist()
 
         search_results = pinecone_index.query(
             vector=query_vector,
-            top_k=min(k + 10, len(valid_titles)),
+            top_k=min(k * 5, len(valid_titles)),  # Get 5x more for filtering
             namespace=PINECONE_NAMESPACE,
             include_metadata=True
         )
 
-        # Process results
+        # Process results with day-by-day validation
         results = []
         for match in search_results.matches:
             sim_title = match.metadata.get('title')
@@ -359,7 +435,17 @@ def search_similar_movies(movie_title: str, k: int = DEFAULT_K) -> Dict[str, Any
 
             sim_idx = int(match.metadata.get('index'))
             sim_metadata = metadata[sim_idx]
-            sim_growth = embeddings[sim_idx] * (np.linalg.norm(embeddings[sim_idx]) + 1e-8)
+            sim_growth = embeddings[sim_idx]  # Raw growth values
+
+            # NEW: Day-by-day validation
+            validation = validate_daily_growth_similarity(query_growth, sim_growth, MAX_DAILY_GROWTH_DIFF)
+            
+            if not validation['valid']:
+                continue  # Skip if daily growth difference exceeds threshold
+
+            # DBR overlap analysis
+            sim_dbr_range = (sim_metadata['dbr_start'], sim_metadata['dbr_end'])
+            overlap_start, overlap_end, overlap_days = find_dbr_overlap(query_dbr_range, sim_dbr_range)
 
             growth_diff = np.abs(query_growth - sim_growth)
             avg_growth_diff = float(np.mean(growth_diff))
@@ -377,6 +463,14 @@ def search_similar_movies(movie_title: str, k: int = DEFAULT_K) -> Dict[str, Any
                     'positive_growth_days': sim_positive_days,
                     'avg_daily_growth': round(sim_avg_growth, 2),
                     'revenue_comparison': 'higher' if sim_metadata['total_revenue'] > query_metadata['total_revenue'] else 'lower'
+                },
+                'validation': validation,  # NEW: Day-by-day validation metrics
+                'dbr_overlap': {  # NEW: DBR overlap info
+                    'overlap_start': overlap_start,
+                    'overlap_end': overlap_end,
+                    'overlap_days': overlap_days,
+                    'query_range': f"DBR {query_dbr_range[0]} to {query_dbr_range[1]}",
+                    'candidate_range': f"DBR {sim_dbr_range[0]} to {sim_dbr_range[1]}"
                 }
             })
 
@@ -387,7 +481,7 @@ def search_similar_movies(movie_title: str, k: int = DEFAULT_K) -> Dict[str, Any
             return {
                 "status": "no_matches",
                 "query_movie": matched_title,
-                "message": f"No similar movies found (threshold: {MIN_SIMILARITY_SCORE})"
+                "message": f"No similar movies found (threshold: {MIN_SIMILARITY_SCORE}, max daily diff: {MAX_DAILY_GROWTH_DIFF}%)"
             }
 
         return {
@@ -397,7 +491,8 @@ def search_similar_movies(movie_title: str, k: int = DEFAULT_K) -> Dict[str, Any
                 "total_revenue": query_metadata['total_revenue'],
                 "active_days": query_metadata['active_days'],
                 "avg_daily_growth": round(query_avg_growth, 2),
-                "positive_growth_days": query_positive_days
+                "positive_growth_days": query_positive_days,
+                "dbr_range": f"DBR {query_dbr_range[0]} to {query_dbr_range[1]}"
             },
             "similar_movies": results,
             "total_found": len(results)
@@ -443,8 +538,9 @@ def parse_user_query(query: str) -> Dict[str, Any]:
         r'(?:movies?|films?)\s+',
         r'top\s+\d+\s+',
         r'^\d+\s+',
-        r'which\s+movies?\s+',
-        r'what\s+movies?\s+',
+        r'which\s+(?:movie|film)?\s*(?:is)?\s*',  # NEW: Handle 'which movie is'
+        r'what\s+(?:movie|film)?\s*(?:is)?\s*',   # NEW: Handle 'what movie is'
+        r'is\s+(?:similar\s+to)?\s*',              # NEW: Handle 'is similar to'
         r'performed\s+like\s+',
     ]
 
@@ -476,34 +572,44 @@ def generate_detailed_analysis(search_results: Dict[str, Any]) -> str:
         query_meta = search_results['query_metadata']
         similar_movies = search_results['similar_movies']
 
-    # Prepare context for LLM
-        context = f"""You are a professional Movie analyst. Analyze these box office performance similarities:
+        # Prepare context for LLM
+        context = f"""Analyze these box office performance similarities (V3 - Enhanced Matching):
 
 QUERY MOVIE: {query_movie}
 - Total Revenue: ${query_meta['total_revenue']:,.0f}
 - Active Days: {query_meta['active_days']}
 - Average Daily Growth Rate: {query_meta['avg_daily_growth']}%
 - Days with Positive Growth: {query_meta['positive_growth_days']}
+- {query_meta['dbr_range']}
 
-SIMILAR MOVIES FOUND:
+SIMILAR MOVIES FOUND (All within ±{MAX_DAILY_GROWTH_DIFF}% daily growth):
 """
 
         for i, movie in enumerate(similar_movies[:5], 1):  # Top 5 only for analysis
             context += f"\n{i}. {movie['title']}"
             context += f"\n   - Similarity Score: {movie['confidence']} ({int(movie['confidence']*100)}%)"
-            context += f"\n   - Movie full data: {str(movie["movie_data"])}"
             context += f"\n   - Total Revenue: ${movie['total_revenue']:,.0f}"
             context += f"\n   - Active Days: {movie['active_days']}"
             context += f"\n   - Avg Daily Growth: {movie['analysis']['avg_daily_growth']}%"
-            context += f"\n   - Growth Pattern Difference: {movie['analysis']['avg_growth_difference']}%"
-            context += f"\n   - Days with Positive Growth: {movie['analysis']['positive_growth_days']}"
+            context += f"\n   - Max Daily Difference: {movie['validation']['max_diff']}%"
+            context += f"\n   - Avg Daily Difference: {movie['validation']['avg_diff']}%"
+            context += f"\n   - Days Matching (±{MAX_DAILY_GROWTH_DIFF}%): {movie['validation']['days_within_threshold']}/{movie['validation']['total_active_days']}"
+            context += f"\n   - DBR Overlap: {movie['dbr_overlap']['overlap_days']} days"
             context += f"\n   - Revenue Comparison: {movie['analysis']['revenue_comparison']} than query movie\n"
 
         prompt = f"""{context}
 
 Your task as a box office analyst:
-1. Explain WHY these movies are similar to "{query_movie}" in 3 sentences.
-2. End with an overall summary of what these similarities tell us in maximum 5 sentences.
+1. Explain WHY these movies are similar to "{query_movie}"
+2. Identify the KEY PATTERNS they share (opening performance, sustained growth, decay rate)
+3. Mention specific similarities in:
+   - Growth trajectories (similar curves at which days/weeks)
+   - Revenue patterns (front-loaded vs long-tail)
+   - Active theatrical run length
+   - Performance consistency
+4. For each similar movie, provide 1-2 sentences explaining the specific match
+5. Highlight that V3 ensures day-by-day growth differences are within {MAX_DAILY_GROWTH_DIFF}%
+6. End with an overall summary of what these similarities tell us
 
 Be specific with numbers and percentages. Write in a clear, professional tone.
 
@@ -546,9 +652,11 @@ def format_results(search_results: Dict[str, Any]) -> str:
     output = f"\n🎬 Query Movie: {query_movie}\n"
     output += f"💰 Total Revenue: ${query_meta['total_revenue']:,.0f}\n"
     output += f"📅 Active Days: {query_meta['active_days']}\n"
-    output += f"📈 Avg Daily Growth: {query_meta['avg_daily_growth']}%\n"
+    # output += f"📈 Avg Growth: {query_meta['avg_daily_growth']}%\n"
+    output += f"📍 {query_meta['dbr_range']}\n"
+    
     output += f"\n{'='*70}\n"
-    output += f"📊 Found {search_results['total_found']} Similar Movies:\n"
+    output += f"📊 Found {search_results['total_found']} Similar Movies (V3 - Enhanced):\n"
     output += f"{'='*70}\n\n"
 
     for i, movie in enumerate(search_results['similar_movies'], 1):
@@ -559,17 +667,18 @@ def format_results(search_results: Dict[str, Any]) -> str:
         output += f"   Similarity: {confidence_percent}% (confidence: {confidence_score})\n"
         output += f"   💰 Revenue: ${movie['total_revenue']:,.0f} ({movie['analysis']['revenue_comparison']})\n"
         output += f"   📅 Active Days: {movie['active_days']}\n"
-        output += f"   📈 Avg Daily Growth: {movie['analysis']['avg_daily_growth']}%\n"
-        output += f"   🔄 Growth Pattern Diff: {movie['analysis']['avg_growth_difference']}%\n"
-        output += f"   Movie Data: {str(movie['movie_data'])}%\n"
-        # output += f"   → Similar box office revenue growth patterns\n\n"
+        # output += f"   📈 Avg Growth: {movie['analysis']['avg_daily_growth']}%\n"
+        output += f"   ✅ Max Daily Diff: {movie['validation']['max_diff']}% (within ±{MAX_DAILY_GROWTH_DIFF}%)\n"
+        output += f"   ✅ Avg Daily Diff: {movie['validation']['avg_diff']}%\n"
+        output += f"   📍 DBR Overlap: {movie['dbr_overlap']['overlap_days']} days\n"
+        output += f"   → Precise day-by-day growth pattern match!\n\n"
 
     return output
 
 
 # ==================== MAIN INTERFACE ====================
 def ask(user_query: str) -> Dict[str, Any]:
-    """Main interface - Simplified without LLM dependency"""
+    """Main interface - V3 with enhanced day-by-day validation"""
     print(f"\n{'='*70}")
     print(f"💬 USER: {user_query}")
     print('='*70 + "\n")
@@ -580,7 +689,8 @@ def ask(user_query: str) -> Dict[str, Any]:
         movie_title = parsed["movie_title"]
         k = parsed["k"]
 
-        print(f"🔍 Searching for {k} movies similar to: '{movie_title}'\n")
+        print(f"🔍 Searching for {k} movies similar to: '{movie_title}'")
+        print(f"📊 V3 Filters: 95% similarity + max ±{MAX_DAILY_GROWTH_DIFF}% daily difference\n")
 
         # Search
         search_results = search_similar_movies(movie_title, k)
@@ -589,13 +699,6 @@ def ask(user_query: str) -> Dict[str, Any]:
             error_msg = search_results.get('message', 'Search failed')
             print(f"❌ {error_msg}\n")
             return {"error": error_msg, "message": ""}
-
-        for i, movie in enumerate(search_results["similar_movies"]):
-            # print(movie["title"])
-            filtered_df = df_full[df_full['title'] == movie["title"]]
-            data = filtered_df.to_json(orient='records')
-            # print(data)
-            search_results["similar_movies"][i]["movie_data"] = data
 
         # Format output
         output = format_results(search_results)
@@ -613,7 +716,7 @@ def ask(user_query: str) -> Dict[str, Any]:
         print('\n' + '='*70)
 
         # Combine for return
-        full_output = output + "\n" + "="*30 + "\n" + "DETAILED ANALYSIS:\n" + "="*30 + "\n\n" + analysis
+        full_output = output + "\n" + "="*70 + "\n" + "DETAILED ANALYSIS:\n" + "="*70 + "\n\n" + analysis
 
         return {"message": full_output, "error": ""}
 
@@ -621,50 +724,56 @@ def ask(user_query: str) -> Dict[str, Any]:
         error_msg = f"Error: {str(e)}"
         print(f"❌ {error_msg}\n")
         return {"error": error_msg, "message": ""}
-initialize_system()
-# resukts = ask("which top 2 movies is similar to 3almashi?")
-# print(resukts)
 
-# # ==================== MAIN LOOP ====================
-# def main():
-#     """Main entry point"""
-#     print("\n" + "="*70)
-#     print("🎬 MOVIE SIMILARITY SEARCH - PINECONE")
-#     print("="*70)
-#
-#     if not initialize_system():
-#         print("\n❌ Initialization failed. Exiting.")
-#         return
-#
-#     print(f"\n📊 Database: {len(valid_titles)} movies")
-#     print(f"🔗 Vector DB: Pinecone ({PINECONE_INDEX_NAME})")
-#     print("\n💡 Example queries:")
-#     print('   • "Find similar movies to Avatar"')
-#     print('   • "Top 10 movies like Titanic"')
-#     print('   • "Show me 5 movies like Inception"')
-#     print('   • "3almashi similar movies"')
-#     print("\n" + "="*70 + "\n")
-#
-#     while True:
-#         try:
-#             user_input = input("💬 Your question (or 'quit'): ").strip()
-#
-#             if user_input.lower() in ['quit', 'exit', 'q']:
-#                 print("\n👋 Goodbye!")
-#                 break
-#
-#             if not user_input:
-#                 print("⚠️ Please enter a question.\n")
-#                 continue
-#
-#             ask(user_input)
-#
-#         except KeyboardInterrupt:
-#             print("\n\n👋 Goodbye!")
-#             break
-#         except Exception as e:
-#             print(f"\n❌ Error: {e}\n")
-#
-#
-# if __name__ == "__main__":
-#     main()
+
+# ==================== AUTO-INITIALIZE ====================
+# initialize_system()
+
+# ==================== MAIN LOOP ====================
+def main():
+    """Main entry point"""
+    print("\n" + "="*70)
+    print("🎬 MOVIE SIMILARITY SEARCH V3 - ENHANCED MATCHING")
+    print("="*70)
+
+    if not initialize_system():
+        print("\n❌ Initialization failed. Exiting.")
+        return
+
+    print(f"\n📊 Database: {len(valid_titles)} movies")
+    print(f"🔗 Vector DB: Pinecone ({PINECONE_INDEX_NAME})")
+    print(f"✅ V3 Features:")
+    print(f"   • 95% similarity threshold (vs 99% in V2)")
+    print(f"   • Max ±{MAX_DAILY_GROWTH_DIFF}% daily growth difference")
+    print(f"   • DBR overlap detection")
+    print(f"   • Raw growth values (no normalization)")
+    print("\n💡 Example queries:")
+    print('   • "Find similar movies to Avatar"')
+    print('   • "Top 10 movies like Titanic"')
+    print('   • "Show me 5 movies like Inception"')
+    print('   • "3almashi similar movies"')
+    print("\n" + "="*70 + "\n")
+
+    while True:
+        try:
+            user_input = input("💬 Your question (or 'quit'): ").strip()
+
+            if user_input.lower() in ['quit', 'exit', 'q']:
+                print("\n👋 Goodbye!")
+                break
+
+            if not user_input:
+                print("⚠️ Please enter a question.\n")
+                continue
+
+            ask(user_input)
+
+        except KeyboardInterrupt:
+            print("\n\n👋 Goodbye!")
+            break
+        except Exception as e:
+            print(f"\n❌ Error: {e}\n")
+
+
+if __name__ == "__main__":
+    main()
