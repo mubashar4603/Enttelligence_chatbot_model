@@ -621,7 +621,7 @@ def ask(user_query: str) -> Dict[str, Any]:
         error_msg = f"Error: {str(e)}"
         print(f"❌ {error_msg}\n")
         return {"error": error_msg, "message": ""}
-initialize_system()
+# initialize_system()
 # resukts = ask("which top 2 movies is similar to 3almashi?")
 # print(resukts)
 

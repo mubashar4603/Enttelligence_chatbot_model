@@ -8,7 +8,7 @@ import numpy as np
 from scipy.ndimage import gaussian_filter1d
 from typing import Dict, List, Tuple, Any
 from tqdm import tqdm
-import config
+import similarity_engine_v2.config as config
 
 class MoviePreprocessor:
     """Process raw movie data into structured format with growth curves"""

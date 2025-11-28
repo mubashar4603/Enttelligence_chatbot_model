@@ -86,6 +86,11 @@ GRAPH_FIGSIZE = (12, 6)      # Graph size in inches
 VERBOSE = True               # Print detailed progress information
 DEBUG = False                # Enable debug logging
 
+# ==================== LLM CONFIGURATION ====================
+OLLAMA_MODEL = "llama3:8b"
+OLLAMA_URL = "http://localhost:11434/api/generate"
+ENABLE_LLM_ANALYSIS = True
+
 # ==================== VALIDATION ====================
 def validate_config():
     """Validate configuration parameters"""

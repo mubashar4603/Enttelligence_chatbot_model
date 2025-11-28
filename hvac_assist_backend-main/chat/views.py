@@ -1,8 +1,7 @@
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
-
-from similarity_engine.movie_similarity_bot_V2 import ask
+from similarity_engine_v2.llm_agent import  similarity_agent
 from .models import Conversation, Message
 from .serializers import MessageSerializer, ConversationSerializer
 from rest_framework import generics, permissions
@@ -129,12 +128,13 @@ class MessageViewSet(viewsets.ModelViewSet):
             #     user=request.user,
             #     conversation=conversation
             # )
-
+            # V2 Simple Implementation
             # import movie_curve_similarity
 
             # query_response = movie_curve_similarity.query(message.content)
-            query_response = ask(message.content)
+            # query_response = ask(message.content)
 
+            query_response = similarity_agent.process_query(message.content)
             # Get the response message - ALWAYS natural language, no JSON
             bot_reply = query_response.get("message", "")
             

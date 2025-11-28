@@ -6,7 +6,7 @@ Handles CSV loading and data cleaning
 import pandas as pd
 import numpy as np
 from typing import Dict, Any
-import config
+import similarity_engine_v2.config as config
 
 class DataLoader:
     """Load and clean movie revenue data from CSV"""

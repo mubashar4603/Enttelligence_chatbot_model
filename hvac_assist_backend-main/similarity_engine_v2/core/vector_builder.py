@@ -5,7 +5,7 @@ Generates fixed-dimension embeddings from growth curves
 
 import numpy as np
 from typing import Dict, List, Tuple, Any
-import config
+from similarity_engine_v2 import config
 
 class VectorBuilder:
     """Build fixed-dimension vectors from variable-length growth curves"""

@@ -8,7 +8,7 @@ import pandas as pd
 from typing import Dict, List, Tuple, Any
 import sys
 sys.path.append('..')
-import config
+import similarity_engine_v2.config as config
 
 class DBRSpecificSimilarity:
     """Find movies similar on specific DBR ranges"""
