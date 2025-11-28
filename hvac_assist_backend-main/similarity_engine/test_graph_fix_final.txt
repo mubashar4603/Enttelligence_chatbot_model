@@ -1,0 +1,112 @@
+================================================================================
+TESTING FIXED V4 BOT
+================================================================================
+
+Initializing...
+🔧 Initializing Pinecone...
+✓ Index 'movie-similarity-v4-fixed' found
+🗑️ Deleting old data from namespace 'movie-growth-vectors-v4-fixed'...
+✓ Old data deleted
+✓ Connected to Pinecone index 'movie-similarity-v4-fixed'
+
+🔄 Building FRESH embeddings from CSV...
+
+
+📂 Loading CSV data...
+🔨 Building growth curves for ALL movies...
+Processing movies:   0%|          | 0/4998 [00:00<?, ?it/s]Processing movies:   1%|          | 49/4998 [00:00<00:10, 489.83it/s]Processing movies:   2%|▏         | 101/4998 [00:00<00:09, 505.77it/s]Processing movies:   3%|▎         | 152/4998 [00:00<00:09, 499.76it/s]Processing movies:   4%|▍         | 202/4998 [00:00<00:10, 471.66it/s]Processing movies:   5%|▌         | 253/4998 [00:00<00:09, 482.12it/s]Processing movies:   6%|▌         | 304/4998 [00:00<00:09, 489.37it/s]Processing movies:   7%|▋         | 354/4998 [00:00<00:09, 491.65it/s]Processing movies:   8%|▊         | 404/4998 [00:00<00:09, 493.91it/s]Processing movies:   9%|▉         | 455/4998 [00:00<00:09, 498.32it/s]Processing movies:  10%|█         | 505/4998 [00:01<00:09, 492.09it/s]Processing movies:  11%|█         | 555/4998 [00:01<00:09, 489.20it/s]Processing movies:  12%|█▏        | 606/4998 [00:01<00:08, 494.62it/s]Processing movies:  13%|█▎        | 657/4998 [00:01<00:08, 498.90it/s]Processing movies:  14%|█▍        | 708/4998 [00:01<00:08, 500.71it/s]Processing movies:  15%|█▌        | 759/4998 [00:01<00:08, 498.25it/s]Processing movies:  16%|█▌        | 810/4998 [00:01<00:08, 499.48it/s]Processing movies:  17%|█▋        | 861/4998 [00:01<00:08, 500.18it/s]Processing movies:  18%|█▊        | 912/4998 [00:01<00:08, 502.01it/s]Processing movies:  19%|█▉        | 963/4998 [00:01<00:08, 502.18it/s]Processing movies:  20%|██        | 1016/4998 [00:02<00:07, 507.47it/s]Processing movies:  21%|██▏       | 1067/4998 [00:02<00:07, 503.89it/s]Processing movies:  22%|██▏       | 1118/4998 [00:02<00:07, 504.74it/s]Processing movies:  23%|██▎       | 1169/4998 [00:02<00:07, 505.46it/s]Processing movies:  24%|██▍       | 1220/4998 [00:02<00:07, 480.81it/s]Processing movies:  26%|██▌       | 1276/4998 [00:02<00:07, 503.41it/s]Processing movies:  27%|██▋       | 1329/4998 [00:02<00:07, 509.15it/s]Processing movies:  28%|██▊       | 1381/4998 [00:02<00:07, 505.89it/s]Processing movies:  29%|██▊       | 1432/4998 [00:02<00:07, 505.07it/s]Processing movies:  30%|██▉       | 1484/4998 [00:02<00:06, 507.47it/s]Processing movies:  31%|███       | 1535/4998 [00:03<00:06, 507.58it/s]Processing movies:  32%|███▏      | 1586/4998 [00:03<00:06, 507.27it/s]Processing movies:  33%|███▎      | 1637/4998 [00:03<00:06, 504.49it/s]Processing movies:  34%|███▍      | 1688/4998 [00:03<00:06, 499.67it/s]Processing movies:  35%|███▍      | 1738/4998 [00:03<00:06, 494.90it/s]Processing movies:  36%|███▌      | 1788/4998 [00:03<00:06, 491.44it/s]Processing movies:  37%|███▋      | 1839/4998 [00:03<00:06, 494.30it/s]Processing movies:  38%|███▊      | 1889/4998 [00:03<00:06, 492.46it/s]Processing movies:  39%|███▉      | 1939/4998 [00:03<00:06, 492.84it/s]Processing movies:  40%|███▉      | 1989/4998 [00:03<00:06, 491.18it/s]Processing movies:  41%|████      | 2039/4998 [00:04<00:06, 492.63it/s]Processing movies:  42%|████▏     | 2089/4998 [00:04<00:05, 491.57it/s]Processing movies:  43%|████▎     | 2139/4998 [00:04<00:05, 493.09it/s]Processing movies:  44%|████▍     | 2189/4998 [00:04<00:05, 493.71it/s]Processing movies:  45%|████▍     | 2239/4998 [00:04<00:05, 478.33it/s]Processing movies:  46%|████▌     | 2289/4998 [00:04<00:05, 483.84it/s]Processing movies:  47%|████▋     | 2340/4998 [00:04<00:05, 490.03it/s]Processing movies:  48%|████▊     | 2390/4998 [00:04<00:05, 489.47it/s]Processing movies:  49%|████▉     | 2441/4998 [00:04<00:05, 493.53it/s]Processing movies:  50%|████▉     | 2491/4998 [00:05<00:05, 489.20it/s]Processing movies:  51%|█████     | 2540/4998 [00:05<00:05, 453.80it/s]Processing movies:  52%|█████▏    | 2588/4998 [00:05<00:05, 460.12it/s]Processing movies:  53%|█████▎    | 2640/4998 [00:05<00:04, 476.11it/s]Processing movies:  54%|█████▍    | 2693/4998 [00:05<00:04, 489.70it/s]Processing movies:  55%|█████▍    | 2745/4998 [00:05<00:04, 496.86it/s]Processing movies:  56%|█████▌    | 2797/4998 [00:05<00:04, 501.36it/s]Processing movies:  57%|█████▋    | 2848/4998 [00:05<00:04, 503.56it/s]Processing movies:  58%|█████▊    | 2899/4998 [00:05<00:04, 480.06it/s]Processing movies:  59%|█████▉    | 2950/4998 [00:05<00:04, 486.01it/s]Processing movies:  60%|██████    | 3000/4998 [00:06<00:04, 489.71it/s]Processing movies:  61%|██████    | 3050/4998 [00:06<00:03, 492.17it/s]Processing movies:  62%|██████▏   | 3102/4998 [00:06<00:03, 497.63it/s]Processing movies:  63%|██████▎   | 3152/4998 [00:06<00:03, 498.30it/s]Processing movies:  64%|██████▍   | 3203/4998 [00:06<00:03, 499.27it/s]Processing movies:  65%|██████▌   | 3253/4998 [00:06<00:03, 477.98it/s]Processing movies:  66%|██████▌   | 3302/4998 [00:06<00:03, 477.40it/s]Processing movies:  67%|██████▋   | 3353/4998 [00:06<00:03, 484.96it/s]Processing movies:  68%|██████▊   | 3403/4998 [00:06<00:03, 487.01it/s]Processing movies:  69%|██████▉   | 3454/4998 [00:07<00:03, 491.38it/s]Processing movies:  70%|███████   | 3506/4998 [00:07<00:02, 498.44it/s]Processing movies:  71%|███████   | 3557/4998 [00:07<00:02, 500.20it/s]Processing movies:  72%|███████▏  | 3608/4998 [00:07<00:02, 500.92it/s]Processing movies:  73%|███████▎  | 3659/4998 [00:07<00:02, 496.91it/s]Processing movies:  74%|███████▍  | 3710/4998 [00:07<00:02, 499.57it/s]Processing movies:  75%|███████▌  | 3761/4998 [00:07<00:02, 499.97it/s]Processing movies:  76%|███████▋  | 3813/4998 [00:07<00:02, 502.94it/s]Processing movies:  77%|███████▋  | 3864/4998 [00:07<00:02, 501.81it/s]Processing movies:  78%|███████▊  | 3915/4998 [00:07<00:02, 502.72it/s]Processing movies:  79%|███████▉  | 3966/4998 [00:08<00:02, 502.15it/s]Processing movies:  80%|████████  | 4017/4998 [00:08<00:01, 502.50it/s]Processing movies:  81%|████████▏ | 4068/4998 [00:08<00:01, 502.01it/s]Processing movies:  82%|████████▏ | 4119/4998 [00:08<00:01, 502.80it/s]Processing movies:  83%|████████▎ | 4170/4998 [00:08<00:01, 500.43it/s]Processing movies:  84%|████████▍ | 4221/4998 [00:08<00:01, 493.80it/s]Processing movies:  85%|████████▌ | 4271/4998 [00:08<00:01, 490.15it/s]Processing movies:  86%|████████▋ | 4321/4998 [00:08<00:01, 477.43it/s]Processing movies:  87%|████████▋ | 4370/4998 [00:08<00:01, 479.19it/s]Processing movies:  88%|████████▊ | 4421/4998 [00:08<00:01, 486.67it/s]Processing movies:  89%|████████▉ | 4470/4998 [00:09<00:01, 484.40it/s]Processing movies:  90%|█████████ | 4522/4998 [00:09<00:00, 492.38it/s]Processing movies:  91%|█████████▏| 4572/4998 [00:09<00:00, 493.64it/s]Processing movies:  92%|█████████▏| 4623/4998 [00:09<00:00, 497.34it/s]Processing movies:  93%|█████████▎| 4673/4998 [00:09<00:00, 498.05it/s]Processing movies:  94%|█████████▍| 4723/4998 [00:09<00:00, 497.70it/s]Processing movies:  96%|█████████▌| 4774/4998 [00:09<00:00, 499.52it/s]Processing movies:  97%|█████████▋| 4825/4998 [00:09<00:00, 501.38it/s]Processing movies:  98%|█████████▊| 4876/4998 [00:09<00:00, 501.92it/s]Processing movies:  99%|█████████▊| 4927/4998 [00:09<00:00, 502.38it/s]Processing movies: 100%|█████████▉| 4978/4998 [00:10<00:00, 494.74it/s]Processing movies: 100%|██████████| 4998/4998 [00:10<00:00, 494.33it/s]
+✓ Growth curves built for 3373 movies
+🔄 Preparing embeddings (raw growth values - no normalization)...
+✓ Fresh embeddings created! Shape: (3373, 60)
+
+📤 Uploading 3373 vectors to Pinecone...
+✓ All vectors uploaded to namespace 'movie-growth-vectors-v4-fixed'
+✓ Verified: 3373 vectors in namespace
+
+✅ System ready! 3373 movies indexed
+
+
+================================================================================
+TEST 1: 3almashi (should find movies with similar 3-day patterns)
+================================================================================
+
+======================================================================
+💬 USER: top 3 similar movies to 3almashi
+======================================================================
+
+🔍 Searching for 3 movies similar to: 'to 3almashi'
+
+📈 Generating similarity graph...
+📊 Graph saved to: similarity_graphs_v2/3almashi_similarity.png
+
+🎬 Query Movie: 3almashi
+💰 Total Revenue: $1,756
+📅 Active Days: 3
+📈 Avg Daily Growth: 59.76%
+
+======================================================================
+📊 Found 3 Similar Movies:
+======================================================================
+
+1. One Fine Morning
+   Similarity: 100% (confidence: 1.0)
+   💰 Revenue: $1,318 (lower)
+   📅 Active Days: 3
+   📈 Avg Daily Growth: 46.0%
+   🔄 Growth Pattern Diff: 0.36%
+2. Causeway
+   Similarity: 100% (confidence: 1.0)
+   💰 Revenue: $1,263 (lower)
+   📅 Active Days: 3
+   📈 Avg Daily Growth: 78.59%
+   🔄 Growth Pattern Diff: 0.49%
+3. Echo a Delta
+   Similarity: 100% (confidence: 1.0)
+   💰 Revenue: $2,894 (higher)
+   📅 Active Days: 3
+   📈 Avg Daily Growth: 56.07%
+   🔄 Growth Pattern Diff: 0.15%
+
+
+📊 Graph saved to: similarity_graphs_v2/3almashi_similarity.png
+
+======================================================================
+🤖 DETAILED ANALYSIS:
+======================================================================
+
+Generating detailed analysis...
+
+Based on the provided data, I can identify the following key similarities between "3almashi" and the three similar movies ("One Fine Morning", "Causeway", and "Echo a Delta"):
+
+1. **Initial slow start followed by rapid growth**: All four movies experienced a slow start, with negative or zero daily revenue in the first two days. However, they all showed significant growth on the third day, with increases ranging from 28% to 3246%.
+2. **High average daily growth rate**: The average daily growth rate for "3almashi" is 59.76%, which is comparable to the average daily growth rates of the similar movies: 46.0% (One Fine Morning), 78.59% (Causeway), and 56.07% (Echo a Delta).
+3. **Limited days with positive growth**: All four movies only had one day with positive growth, indicating that their box office performance was heavily influenced by this single day.
+
+Overall, these similarities suggest that "3almashi" follows a common pattern in its box office performance, characterized by an initial slow start followed by rapid growth on the third day. This pattern is not unique to "3almashi", as the similar movies ("One Fine Morning", "Causeway", and "Echo a Delta") also exhibit this trend.
+
+======================================================================
+
+================================================================================
+TEST 2: 6 Days (should find movies with longer run patterns)
+================================================================================
+
+======================================================================
+💬 USER: top 3 similar movies to 6 Days
+======================================================================
+
+🔍 Searching for 3 movies similar to: 'to 6 Days'
+
+❌ No similar movies found (threshold: 0.99)
+
+
+================================================================================
+VERIFICATION
+================================================================================
+✅ Test 1 passed: Found similar movies for 3almashi
+⚠️  Test 2: No similar movies found (threshold: 0.99)
+   (This is expected if no movies meet the 99% threshold)
+
+================================================================================
+Fix is working! Now similarity is based on actual growth patterns,
+not just the number of active days.
+================================================================================
