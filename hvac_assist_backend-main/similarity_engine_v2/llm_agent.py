@@ -82,25 +82,25 @@ class MovieSimilarityAgent:
         top_results = results[:int(k)]
         
         # Format results for LLM
-        formatted = []
-        for res in top_results:
-            ranges = res['matching_ranges']
-            total_days = sum(r['dbr_count'] for r in ranges)
-            avg_diff = sum(r['avg_difference'] for r in ranges) / len(ranges)
-            
-            formatted.append({
-                "title": res['similar_movie'],
-                "total_revenue": res['total_revenue'],
-                "matching_days": total_days,
-                "avg_growth_diff": round(avg_diff, 2),
-                "ranges_count": len(ranges)
-            })
+        # formatted = []
+        # for res in top_results:
+        #     ranges = res['matching_ranges']
+        #     total_days = sum(r['dbr_count'] for r in ranges)
+        #     avg_diff = sum(r['avg_difference'] for r in ranges) / len(ranges)
+        #
+        #     formatted.append({
+        #         "title": res['similar_movie'],
+        #         "total_revenue": res['total_revenue'],
+        #         "matching_days": total_days,
+        #         "avg_growth_diff": round(avg_diff, 2),
+        #         "ranges_count": len(ranges)
+        #     })
             
         return json.dumps({
             "status": "success",
             "query_movie": target,
-            "count": len(formatted),
-            "results": formatted
+            "count": len(top_results),
+            "results": top_results
         })
 
     def compare_movies(self, movie1: str, movie2: str, max_growth_diff: float = 1.0) -> str:
@@ -209,11 +209,58 @@ To use a tool, you MUST respond with a JSON object in this format:
 If no tool is needed, just answer normally.
 If the user asks for "top 10" but only 5 exist, just return the 5.
 
-DYNAMIC PARAMETERS:
-- You have full control over `max_growth_diff` and `min_consecutive_dbrs`.
-- If user asks for "strict" or "exact" matches, reduce `max_growth_diff` (e.g., 0.5) and increase `min_consecutive_dbrs` (e.g., 5).
-- If user asks for "broad" or "loose" matches, increase `max_growth_diff` (e.g., 2.0 or 3.0) and decrease `min_consecutive_dbrs` (e.g., 2).
-- Default parameters: max_growth_diff=1.0, min_consecutive_dbrs=3.
+⚠️ CRITICAL WARNING FOR PERCENTAGES:
+When user says "5%", you MUST extract 5, NOT 0.05
+When user says "2%", you MUST extract 2, NOT 0.02
+When user says "0.5%", you MUST extract 0.5, NOT 0.005
+The max_growth_diff parameter expects the NUMBER before the % sign, NOT a decimal!
+
+STRICT INSTRUCTIONS FOR PARAMETERS:
+1. EXTRACTING 'k' (number of results):
+   - Look for phrases like "top X", "X movies", "X similar movies" in the user query
+   - Extract the number X and use it as the value for 'k'
+   - Examples:
+     * "top 100 movies" -> k=100
+     * "top 50" -> k=50
+     * "find 20 similar movies" -> k=20
+     * "which 15 movies" -> k=15
+   - If no number is mentioned, use default k=5
+
+2. EXTRACTING 'min_consecutive_dbrs':
+   - Look for phrases like "minimum X consecutive DBR", "at least X DBR", "X consecutive days"
+   - Extract the number and use it as min_consecutive_dbrs
+   - Examples:
+     * "minimum 3 consecutive DBR" -> min_consecutive_dbrs=3
+     * "at least 10 DBR" -> min_consecutive_dbrs=10
+   - Default: min_consecutive_dbrs=6 if not mentioned
+
+3. EXTRACTING 'max_growth_diff' (PERCENTAGE HANDLING):
+   - Look for phrases like "X% diff", "X% difference", "X% tolerance"
+   - Extract ONLY the number X that appears BEFORE the % symbol
+   - DO NOT convert to decimal! If user says "5%", use 5, NOT 0.05!
+   - Examples:
+     * User says "2% diff" -> extract "2" -> max_growth_diff=2
+     * User says "5% difference" -> extract "5" -> max_growth_diff=5
+     * User says "0.5% tolerance" -> extract "0.5" -> max_growth_diff=0.5
+     * User says "3% diff" -> extract "3" -> max_growth_diff=3
+     * User says "10%" -> extract "10" -> max_growth_diff=10
+   - Default: max_growth_diff=1 if not mentioned
+
+4. COMPLETE EXAMPLES:
+   - Input: "Find similar movies to Twisters"
+     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "k": 5, "max_growth_diff": 1, "min_consecutive_dbrs": 6}}}}
+   
+   - Input: "Which top 100 movies is similar to twister with minimum 3 consecutive DBR"
+     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twister", "k": 100, "max_growth_diff": 1, "min_consecutive_dbrs": 3}}}}
+   
+   - Input: "Find top 50 similar movies to Twisters with 2% diff"
+     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "k": 50, "max_growth_diff": 2, "min_consecutive_dbrs": 6}}}}
+   
+   - Input: "Show me 20 movies like Inception with at least 5 DBR"
+     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Inception", "k": 20, "max_growth_diff": 1, "min_consecutive_dbrs": 5}}}}
+   
+   - Input: "Get top 10 movies with 5% difference"
+     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "movies", "k": 10, "max_growth_diff": 5, "min_consecutive_dbrs": 6}}}}
 """
 
         try:
@@ -239,28 +286,94 @@ DYNAMIC PARAMETERS:
                         
                         # Execute Tool
                         result = None
+                        table_str = ""
+                        llm_context_data = []
+                        
                         if tool_name == "search_similar_movies":
                             result = self.search_similar_movies(**params)
+                            # Process table data
+                            try:
+                                res_json = json.loads(result)
+                                if res_json.get("status") == "success":
+                                    # 1. Create DataFrame for User Table
+                                    df = self.finder.export_to_dataframe(res_json['query_movie'], res_json['results'])
+                                    table_str = df.to_markdown(index=False)
+                                    
+                                    # 2. Create Ultra-Compact Context for LLM (Just movie names and total DBR count)
+                                    for item in res_json['results']:
+                                        total_dbr_count = sum(r['dbr_count'] for r in item['matching_ranges'])
+                                        # Get the overall range
+                                        all_dbr_starts = [r['dbr_start'] for r in item['matching_ranges']]
+                                        all_dbr_ends = [r['dbr_end'] for r in item['matching_ranges']]
+                                        min_dbr = min(all_dbr_starts)
+                                        max_dbr = max(all_dbr_ends)
+                                        
+                                        llm_context_data.append({
+                                            "movie": item['similar_movie'],
+                                            "total_matching_dbrs": total_dbr_count,
+                                            "dbr_range": f"{min_dbr} to {max_dbr}"
+                                        })
+                            except:
+                                pass
+                                
                         elif tool_name == "compare_movies":
                             result = self.compare_movies(**params)
+                            # Process table data
+                            try:
+                                res_json = json.loads(result)
+                                if res_json.get("status") == "success":
+                                    # 1. Create DataFrame for User Table
+                                    formatted_res = [{
+                                        'similar_movie': res_json['movie2'],
+                                        'matching_ranges': res_json['details']
+                                    }]
+                                    df = self.finder.export_to_dataframe(res_json['movie1'], formatted_res)
+                                    table_str = df.to_markdown(index=False)
+                                    
+                                    # 2. Compact Context
+                                    total_dbr_count = sum(r['dbr_count'] for r in res_json['details'])
+                                    all_dbr_starts = [r['dbr_start'] for r in res_json['details']]
+                                    all_dbr_ends = [r['dbr_end'] for r in res_json['details']]
+                                    min_dbr = min(all_dbr_starts)
+                                    max_dbr = max(all_dbr_ends)
+                                    
+                                    llm_context_data = [{
+                                        "movie1": res_json['movie1'],
+                                        "movie2": res_json['movie2'],
+                                        "total_matching_dbrs": total_dbr_count,
+                                        "dbr_range": f"{min_dbr} to {max_dbr}"
+                                    }]
+                            except:
+                                pass
                             
                         # 3. Send result back to LLM for final analysis
+                        # Use ultra-compact context to save tokens and ensure all results are acknowledged
                         final_prompt = f"""
 User Query: {user_query}
-Tool Result: {result}
+Tool Result Summary: {json.dumps(llm_context_data, indent=2)}
 
-Please interpret these results for the user.
-- Mention movies name, mention how many DBRs they have similar and do show other information. Don't miss the movie name.
-- Summarize the findings.
-- Explain why the movies are similar (based on matching days and growth difference).
-- Be concise and professional.
+⚠️ CRITICAL: Do NOT make up or hallucinate any movie names. ONLY use the movies listed in the Tool Result Summary above.
+If the Tool Result Summary is empty [], that means NO similar movies were found. In that case, clearly state "No similar movies were found" and DO NOT list any movies.
+
+Please interpret these results for the user:
+IMPORTANT: You MUST mention ALL movies listed in the Tool Result Summary above. Do not skip any movie.
+- If movies are found, list ALL the movie names from the Tool Result Summary.
+- For each movie, mention the total number of matching DBRs and the overall DBR range.
+- Explain that because the DBRs are similar in these ranges, the trajectory is expected to be similar.
+- Explicitly state that Negative DBR means "Days Before Release" and Positive DBR means "Days After Release".
+- DO NOT mention Total Revenue.
+- DO NOT fabricate or suggest movies that are not in the Tool Result Summary.
+- Be concise but comprehensive - mention every single movie in the results.
 """
                         final_response = self._call_ollama("You are a box office analyst.", final_prompt)
                         
                         if final_response.startswith("Error:"):
                             return {"message": "", "error": final_response}
+                        
+                        # Concatenate Table to Response
+                        full_response = f"{final_response}\n\n{table_str}"
                             
-                        return {"message": final_response, "error": ""}
+                        return {"message": full_response, "error": ""}
                         
                 except json.JSONDecodeError:
                     pass # Not valid JSON, treat as normal response
@@ -279,7 +392,7 @@ Please interpret these results for the user.
                 "prompt": f"System: {system}\nUser: {user}",
                 "stream": False,
                 "options": {
-                    "temperature": 0.1,
+                    "temperature": 0.7,
                     "num_predict": 10000  # Limit output length
                 }
             }
@@ -291,38 +404,38 @@ Please interpret these results for the user.
             return f"Error: Ollama API failed with status {response.status_code}"
         except Exception as e:
             return f"Error: {str(e)}"
-similarity_agent = MovieSimilarityAgent()
+# similarity_agent = MovieSimilarityAgent()
 
-# def main():
-#     agent = MovieSimilarityAgent()
-#
-#     print("="*80)
-#     print("🤖 AGENTIC MOVIE SIMILARITY (Tool Calling)")
-#     print("="*80)
-#     print("💡 Example Queries:")
-#     print("   1. 'Top 10 similar movies to Twisters'")
-#     print("   2. 'Find strict matches for Zootopia 2 (0.5% diff)'")
-#     print("   3. 'Find broadly similar movies to The Black Phone (loose match)'")
-#     print("   4. 'Compare Twisters and Wish with 2% tolerance'")
-#     print("   5. 'How is 3almashi similar to The Black Phone?'")
-#     print("="*80)
-#
-#     while True:
-#         try:
-#             query = input("\n💬 You: ").strip()
-#             if query.lower() in ['exit', 'quit']: break
-#             if not query: continue
-#
-#             print("Thinking...")
-#             result = agent.process_query(query)
-#
-#             if result['error']:
-#                 print(f"\n❌ Error: {result['error']}")
-#             else:
-#                 print(f"\n🤖 Agent:\n{result['message']}")
-#
-#         except KeyboardInterrupt:
-#             break
-#
-# if __name__ == "__main__":
-#     main()
+def main():
+    agent = MovieSimilarityAgent()
+
+    print("="*80)
+    print("🤖 AGENTIC MOVIE SIMILARITY (Tool Calling)")
+    print("="*80)
+    print("💡 Example Queries:")
+    print("   1. 'Top 10 similar movies to Twisters'")
+    print("   2. 'Find strict matches for Zootopia 2 (0.5% diff)'")
+    print("   3. 'Find broadly similar movies to The Black Phone (loose match)'")
+    print("   4. 'Compare Twisters and Wish with 2% tolerance'")
+    print("   5. 'How is 3almashi similar to The Black Phone?'")
+    print("="*80)
+
+    while True:
+        try:
+            query = input("\n💬 You: ").strip()
+            if query.lower() in ['exit', 'quit']: break
+            if not query: continue
+
+            print("Thinking...")
+            result = agent.process_query(query)
+
+            if result['error']:
+                print(f"\n❌ Error: {result['error']}")
+            else:
+                print(f"\n🤖 Agent:\n{result['message']}")
+
+        except KeyboardInterrupt:
+            break
+
+if __name__ == "__main__":
+    main()
