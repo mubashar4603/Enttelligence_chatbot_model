@@ -22,7 +22,9 @@ class DBRSpecificSimilarity:
         self,
         query_movie: str,
         max_growth_diff: float = 3.0,
-        min_consecutive_dbrs: int = 3
+        min_consecutive_dbrs: int = 3,
+        min_dbr: int = None,
+        max_dbr: int = None
     ) -> List[Dict[str, Any]]:
         """
         Find movies that match on specific DBR ranges
@@ -31,6 +33,8 @@ class DBRSpecificSimilarity:
             query_movie: Target movie name
             max_growth_diff: Maximum growth % difference (default: 3%)
             min_consecutive_dbrs: Minimum consecutive matching DBRs (default: 3)
+            min_dbr: Minimum DBR to consider (inclusive)
+            max_dbr: Maximum DBR to consider (inclusive)
             
         Returns:
             List of matches with DBR ranges and similar movies
@@ -45,6 +49,12 @@ class DBRSpecificSimilarity:
         # Build DBR to growth mapping for query
         query_dbr_growth = {}
         for i, dbr in enumerate(query_dbrs[:-1]):  # -1 because growth is diff
+            # Apply Range Filtering
+            if min_dbr is not None and dbr < min_dbr:
+                continue
+            if max_dbr is not None and dbr > max_dbr:
+                continue
+                
             if i < len(query_growth):
                 query_dbr_growth[dbr] = query_growth[i]
         
@@ -62,6 +72,12 @@ class DBRSpecificSimilarity:
             # Build DBR to growth mapping for candidate
             cand_dbr_growth = {}
             for i, dbr in enumerate(cand_dbrs[:-1]):
+                # Apply Range Filtering
+                if min_dbr is not None and dbr < min_dbr:
+                    continue
+                if max_dbr is not None and dbr > max_dbr:
+                    continue
+                    
                 if i < len(cand_growth):
                     cand_dbr_growth[dbr] = cand_growth[i]
             

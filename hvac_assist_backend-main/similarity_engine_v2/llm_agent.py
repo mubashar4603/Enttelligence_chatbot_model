@@ -113,31 +113,86 @@ class MovieSimilarityAgent:
         if not target1: return json.dumps({"error": f"Movie '{movie1}' not found"})
         if not target2: return json.dumps({"error": f"Movie '{movie2}' not found"})
         
+
+        # Reuse the finder logic but filter for just the second movie
         results = self.finder.find_dbr_specific_matches(
-            target1,
-            max_growth_diff=float(max_growth_diff),
-            min_consecutive_dbrs=1 # Show all overlaps
+            target1, 
+            max_growth_diff=max_growth_diff,
+            min_consecutive_dbrs=1 # Relax constraint for direct comparison
         )
         
         match = next((r for r in results if r['similar_movie'] == target2), None)
         
-        if not match:
+        if match:
             return json.dumps({
-                "status": "no_overlap",
-                "message": f"No overlapping DBRs found between '{target1}' and '{target2}' within {max_growth_diff}% difference."
+                "status": "success",
+                "movie1": target1,
+                "movie2": target2,
+                "details": match['matching_ranges']
             })
+        else:
+            return json.dumps({"status": "error", "message": f"No significant similarity found between {target1} and {target2}"})
+
+    def get_movie_performance(self, movie_name: str, min_dbr: int = None, max_dbr: int = None) -> str:
+        """
+        Get raw performance data for a single movie, optionally filtered by DBR range.
+        Returns a JSON string with the data.
+        """
+        # Resolve movie name
+        target = self._find_best_match(movie_name)
+        if not target: return json.dumps({"error": f"Movie '{movie_name}' not found"})
             
-        ranges = match['matching_ranges']
-        total_days = sum(r['dbr_count'] for r in ranges)
+        movie_data = self.finder.movies_db[target]
+        dbr_list = movie_data['dbr_list']
+        growth_raw = movie_data['growth_raw']
+        
+        # Filter data based on range
+        filtered_data = []
+        for i, dbr in enumerate(dbr_list[:-1]): # -1 because growth is diff
+            if min_dbr is not None and dbr < min_dbr:
+                continue
+            if max_dbr is not None and dbr > max_dbr:
+                continue
+                
+            if i < len(growth_raw):
+                filtered_data.append({
+                    "dbr": dbr,
+                    "daily_growth": round(growth_raw[i], 2)
+                })
+                
+        return json.dumps({
+            "status": "success",
+            "movie": target,
+            "performance": filtered_data,
+            "total_revenue": movie_data['total_revenue']
+        })
+
+    def search_similar_movies(self, movie_name: str, k: int = 5, max_growth_diff: float = 1.0, min_consecutive_dbrs: int = 6, min_dbr: int = None, max_dbr: int = None) -> str:
+        """
+        Search for similar movies based on DBR growth patterns, optionally within a specific DBR range.
+        Returns a JSON string with the results.
+        """
+        # Resolve movie name
+        target = self._find_best_match(movie_name)
+        if not target: return json.dumps({"error": f"Movie '{movie_name}' not found"})
+
+        results = self.finder.find_dbr_specific_matches(
+            target, 
+            max_growth_diff=max_growth_diff,
+            min_consecutive_dbrs=min_consecutive_dbrs,
+            min_dbr=min_dbr,
+            max_dbr=max_dbr
+        )
+        
+        # Sort by total matching DBRs (descending) and take top k
+        results.sort(key=lambda x: sum(r['dbr_count'] for r in x['matching_ranges']), reverse=True)
+        top_results = results[:k]
         
         return json.dumps({
             "status": "success",
-            "movie1": target1,
-            "movie2": target2,
-            "matching_days": total_days,
-            "details": ranges
+            "query_movie": target,
+            "results": top_results
         })
-
     def _find_best_match(self, partial_name: str) -> Optional[str]:
         """Helper to find exact movie title"""
         if not partial_name: return None
@@ -175,7 +230,9 @@ class MovieSimilarityAgent:
                         "movie_name": {"type": "string", "description": "Name of the movie to search for"},
                         "k": {"type": "integer", "description": "Number of movies to return (default 5)"},
                         "max_growth_diff": {"type": "number", "description": "Max allowed difference in growth percentage (default 1.0)"},
-                        "min_consecutive_dbrs": {"type": "integer", "description": "Min consecutive matching days (default 3)"}
+                        "min_consecutive_dbrs": {"type": "integer", "description": "Min consecutive matching days (default 6)"},
+                        "min_dbr": {"type": "integer", "description": "Minimum DBR (Days Before/After Release) to consider for similarity. e.g., -10 for 10 days before release."},
+                        "max_dbr": {"type": "integer", "description": "Maximum DBR (Days Before/After Release) to consider for similarity. e.g., 30 for 30 days after release."}
                     },
                     "required": ["movie_name"]
                 }
@@ -191,6 +248,19 @@ class MovieSimilarityAgent:
                         "max_growth_diff": {"type": "number", "description": "Max allowed difference (default 1.0)"}
                     },
                     "required": ["movie1", "movie2"]
+                }
+            },
+            {
+                "name": "get_movie_performance",
+                "description": "Gets raw performance data (daily growth percentages) for a single movie, optionally filtered by a DBR range.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "movie_name": {"type": "string", "description": "Name of the movie to get performance for"},
+                        "min_dbr": {"type": "integer", "description": "Minimum DBR (Days Before/After Release) to include in the performance data. e.g., -10 for 10 days before release."},
+                        "max_dbr": {"type": "integer", "description": "Maximum DBR (Days Before/After Release) to include in the performance data. e.g., 30 for 30 days after release."}
+                    },
+                    "required": ["movie_name"]
                 }
             }
         ]
@@ -233,6 +303,7 @@ STRICT INSTRUCTIONS FOR PARAMETERS:
      * "minimum 3 consecutive DBR" -> min_consecutive_dbrs=3
      * "at least 10 DBR" -> min_consecutive_dbrs=10
    - Default: min_consecutive_dbrs=6 if not mentioned
+   - EXCEPTION: If the user specifies a SHORT range (e.g., "first week", "range -5 to 5"), use a lower value like min_consecutive_dbrs=3 to ensure results are found.
 
 3. EXTRACTING 'max_growth_diff' (PERCENTAGE HANDLING):
    - Look for phrases like "X% diff", "X% difference", "X% tolerance"
@@ -246,13 +317,31 @@ STRICT INSTRUCTIONS FOR PARAMETERS:
      * User says "10%" -> extract "10" -> max_growth_diff=10
    - Default: max_growth_diff=1 if not mentioned
 
-4. COMPLETE EXAMPLES:
+4. EXTRACTING 'min_dbr' and 'max_dbr' (RANGE HANDLING):
+   - "First week" / "Week 1" -> min_dbr=0, max_dbr=7
+   - "Post-release" / "After release" -> min_dbr=0
+   - "Pre-release" / "Before release" -> max_dbr=-1
+   - "Positive DBRs" -> min_dbr=0
+   - "Negative DBRs" -> max_dbr=-1
+   - "Range X to Y" -> min_dbr=X, max_dbr=Y
+   - "From day X to day Y" -> min_dbr=X, max_dbr=Y
+   - IMPORTANT: These range parameters apply to BOTH `get_movie_performance` AND `search_similar_movies`.
+
+5. TOOL SELECTION GUIDELINES:
+   - Use `get_movie_performance` when user asks about a SINGLE movie's performance (e.g., "How did Twisters perform in the first week?").
+   - Use `search_similar_movies` when user asks for SIMILAR movies (e.g., "Which movies performed like Twisters in the first week?").
+   - Use `compare_movies` when user asks to COMPARE two specific movies.
+
+6. COMPLETE EXAMPLES:
    - Input: "Find similar movies to Twisters"
      Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "k": 5, "max_growth_diff": 1, "min_consecutive_dbrs": 6}}}}
    
-   - Input: "Which top 100 movies is similar to twister with minimum 3 consecutive DBR"
-     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twister", "k": 100, "max_growth_diff": 1, "min_consecutive_dbrs": 3}}}}
+   - Input: "How did Twisters perform in the first week?"
+     Output: {{"tool": "get_movie_performance", "parameters": {{"movie_name": "Twisters", "min_dbr": 0, "max_dbr": 7}}}}
    
+   - Input: "Which movies are similar to Twisters in the first week?"
+     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "min_dbr": 0, "max_dbr": 7, "k": 5, "max_growth_diff": 1, "min_consecutive_dbrs": 3}}}}
+
    - Input: "Find top 50 similar movies to Twisters with 2% diff"
      Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "k": 50, "max_growth_diff": 2, "min_consecutive_dbrs": 6}}}}
    
@@ -261,6 +350,9 @@ STRICT INSTRUCTIONS FOR PARAMETERS:
    
    - Input: "Get top 10 movies with 5% difference"
      Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "movies", "k": 10, "max_growth_diff": 5, "min_consecutive_dbrs": 6}}}}
+   
+   - Input: "Find similar movies to Twisters in range -5 to 5"
+     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "min_dbr": -5, "max_dbr": 5, "k": 5, "max_growth_diff": 1, "min_consecutive_dbrs": 6}}}}
 """
 
         try:
@@ -290,6 +382,15 @@ STRICT INSTRUCTIONS FOR PARAMETERS:
                         llm_context_data = []
                         
                         if tool_name == "search_similar_movies":
+                            # HEURISTIC FIX: Ensure "first week" queries get correct parameters if LLM misses them
+                            lower_query = user_query.lower()
+                            if "first week" in lower_query or "week 1" in lower_query:
+                                if "min_dbr" not in params: params["min_dbr"] = 0
+                                if "max_dbr" not in params: params["max_dbr"] = 7
+                                # Force lower consecutive DBRs for short range
+                                if params.get("min_consecutive_dbrs", 6) > 1:
+                                    params["min_consecutive_dbrs"] = 1
+                                    
                             result = self.search_similar_movies(**params)
                             # Process table data
                             try:
@@ -343,6 +444,34 @@ STRICT INSTRUCTIONS FOR PARAMETERS:
                                         "total_matching_dbrs": total_dbr_count,
                                         "dbr_range": f"{min_dbr} to {max_dbr}"
                                     }]
+                            except:
+                                pass
+
+                        elif tool_name == "get_movie_performance":
+                            result = self.get_movie_performance(**params)
+                            try:
+                                res_json = json.loads(result)
+                                if res_json.get("status") == "success":
+                                    # 1. Create DataFrame for User Table
+                                    perf_data = res_json['performance']
+                                    if perf_data:
+                                        df = pd.DataFrame(perf_data)
+                                        table_str = df.to_markdown(index=False)
+                                        
+                                        # 2. Context for LLM
+                                        dbrs = [p['dbr'] for p in perf_data]
+                                        min_dbr = min(dbrs)
+                                        max_dbr = max(dbrs)
+                                        avg_growth = sum(p['daily_growth'] for p in perf_data) / len(perf_data)
+                                        
+                                        llm_context_data = [{
+                                            "movie": res_json['movie'],
+                                            "dbr_range": f"{min_dbr} to {max_dbr}",
+                                            "data_points": len(perf_data),
+                                            "avg_daily_growth": round(avg_growth, 2)
+                                        }]
+                                    else:
+                                        llm_context_data = []
                             except:
                                 pass
                             
@@ -404,38 +533,38 @@ IMPORTANT: You MUST mention ALL movies listed in the Tool Result Summary above. 
             return f"Error: Ollama API failed with status {response.status_code}"
         except Exception as e:
             return f"Error: {str(e)}"
-# similarity_agent = MovieSimilarityAgent()
+similarity_agent = MovieSimilarityAgent()
 
-def main():
-    agent = MovieSimilarityAgent()
-
-    print("="*80)
-    print("🤖 AGENTIC MOVIE SIMILARITY (Tool Calling)")
-    print("="*80)
-    print("💡 Example Queries:")
-    print("   1. 'Top 10 similar movies to Twisters'")
-    print("   2. 'Find strict matches for Zootopia 2 (0.5% diff)'")
-    print("   3. 'Find broadly similar movies to The Black Phone (loose match)'")
-    print("   4. 'Compare Twisters and Wish with 2% tolerance'")
-    print("   5. 'How is 3almashi similar to The Black Phone?'")
-    print("="*80)
-
-    while True:
-        try:
-            query = input("\n💬 You: ").strip()
-            if query.lower() in ['exit', 'quit']: break
-            if not query: continue
-
-            print("Thinking...")
-            result = agent.process_query(query)
-
-            if result['error']:
-                print(f"\n❌ Error: {result['error']}")
-            else:
-                print(f"\n🤖 Agent:\n{result['message']}")
-
-        except KeyboardInterrupt:
-            break
-
-if __name__ == "__main__":
-    main()
+# def main():
+#     agent = MovieSimilarityAgent()
+#
+#     print("="*80)
+#     print("🤖 AGENTIC MOVIE SIMILARITY (Tool Calling)")
+#     print("="*80)
+#     print("💡 Example Queries:")
+#     print("   1. 'Top 10 similar movies to Twisters'")
+#     print("   2. 'Find strict matches for Zootopia 2 (0.5% diff)'")
+#     print("   3. 'Find broadly similar movies to The Black Phone (loose match)'")
+#     print("   4. 'Compare Twisters and Wish with 2% tolerance'")
+#     print("   5. 'How is 3almashi similar to The Black Phone?'")
+#     print("="*80)
+#
+#     while True:
+#         try:
+#             query = input("\n💬 You: ").strip()
+#             if query.lower() in ['exit', 'quit']: break
+#             if not query: continue
+#
+#             print("Thinking...")
+#             result = agent.process_query(query)
+#
+#             if result['error']:
+#                 print(f"\n❌ Error: {result['error']}")
+#             else:
+#                 print(f"\n🤖 Agent:\n{result['message']}")
+#
+#         except KeyboardInterrupt:
+#             break
+#
+# if __name__ == "__main__":
+#     main()
