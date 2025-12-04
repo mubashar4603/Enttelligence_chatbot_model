@@ -162,13 +162,34 @@ class DBRSpecificSimilarity:
             diff = abs(query_val - cand_val)
             
             if diff <= max_diff:
-                current_range.append(dbr)
-                current_diffs.append({
-                    'dbr': dbr,
-                    'target_growth': round(query_val, 2),
-                    'similar_growth': round(cand_val, 2),
-                    'difference': round(diff, 2)
-                })
+                # Check for consecutiveness
+                if not current_range or dbr == current_range[-1] + 1:
+                    current_range.append(dbr)
+                    current_diffs.append({
+                        'dbr': dbr,
+                        'target_growth': round(query_val, 2),
+                        'similar_growth': round(cand_val, 2),
+                        'difference': round(diff, 2)
+                    })
+                else:
+                    # Not consecutive - break range
+                    if len(current_range) >= min_consecutive:
+                        ranges.append({
+                            'dbr_start': current_range[0],
+                            'dbr_end': current_range[-1],
+                            'dbr_count': len(current_range),
+                            'dbr_details': current_diffs,
+                            'avg_difference': round(np.mean([d['difference'] for d in current_diffs]), 2)
+                        })
+                    
+                    # Start new range
+                    current_range = [dbr]
+                    current_diffs = [{
+                        'dbr': dbr,
+                        'target_growth': round(query_val, 2),
+                        'similar_growth': round(cand_val, 2),
+                        'difference': round(diff, 2)
+                    }]
             else:
                 # End of consecutive range
                 if len(current_range) >= min_consecutive:

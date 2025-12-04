@@ -26,8 +26,12 @@ class DataLoader:
             print(f"📂 Loading data from: {self.data_path}")
         
         try:
-            # Load with UTF-16 encoding (as per data analysis)
-            df = pd.read_csv(self.data_path, encoding='utf-16', sep='\t')
+            # Try UTF-8 first (for new generated files)
+            try:
+                df = pd.read_csv(self.data_path, encoding='utf-8')
+            except (UnicodeDecodeError, pd.errors.ParserError):
+                # Fall back to UTF-16 with tab separator (for original files)
+                df = pd.read_csv(self.data_path, encoding='utf-16', sep='\t')
             
             if config.VERBOSE:
                 print(f"   Loaded {len(df)} rows")
@@ -56,7 +60,7 @@ class DataLoader:
             'Title': 'title',
             'DBR': 'dbr',
             'Sales Estimate': 'daily_revenue',
-            'cumulative_revenue': 'cumulative_revenue',
+            'Cuml. Sales Estimate': 'cumulative_revenue',
             'Growth (%)': 'growth_pct'
         }
         

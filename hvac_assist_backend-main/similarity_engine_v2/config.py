@@ -6,7 +6,8 @@ import os
 
 # ==================== PATHS ====================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_PATH = os.path.join(os.path.dirname(BASE_DIR), "similarity_engine", "AI_Data_Dump_with_Growth.csv")
+# DATA_PATH = os.path.join(os.path.dirname(BASE_DIR), "similarity_engine", "AI_Data_Dump_with_Growth.csv")
+DATA_PATH = os.path.join(os.path.dirname(BASE_DIR), "similarity_engine_v2", "AI_Data_Dump_1203_with_Growth.csv")
 CACHE_DIR = os.path.join(BASE_DIR, "cache")
 GRAPHS_DIR = os.path.join(BASE_DIR, "graphs")
 
@@ -15,7 +16,7 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 os.makedirs(GRAPHS_DIR, exist_ok=True)
 
 # ==================== DATA PREPROCESSING ====================
-MIN_REVENUE_THRESHOLD = 100  # Minimum daily revenue to consider as "active day"
+MIN_REVENUE_THRESHOLD = 0    # Minimum daily revenue to consider as "active day"
 MIN_ACTIVE_DAYS = 3          # Minimum active days for a movie to be included
 MIN_TOTAL_REVENUE = 1000     # Minimum total revenue for a movie to be included
 

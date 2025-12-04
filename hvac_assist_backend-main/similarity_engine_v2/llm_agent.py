@@ -167,7 +167,7 @@ class MovieSimilarityAgent:
             "total_revenue": movie_data['total_revenue']
         })
 
-    def search_similar_movies(self, movie_name: str, k: int = 5, max_growth_diff: float = 1.0, min_consecutive_dbrs: int = 6, min_dbr: int = None, max_dbr: int = None) -> str:
+    def search_similar_movies(self, movie_name: str, k: int = 5, max_growth_diff: float = 1.0, min_consecutive_dbrs: int = 2, min_dbr: int = None, max_dbr: int = None) -> str:
         """
         Search for similar movies based on DBR growth patterns, optionally within a specific DBR range.
         Returns a JSON string with the results.
@@ -255,7 +255,7 @@ class MovieSimilarityAgent:
                         "movie_name": {"type": "string", "description": "Name of the movie to search for"},
                         "k": {"type": "integer", "description": "Number of movies to return (default 5)"},
                         "max_growth_diff": {"type": "number", "description": "Max allowed difference in growth percentage (default 1.0)"},
-                        "min_consecutive_dbrs": {"type": "integer", "description": "Min consecutive matching days (default 6)"},
+                        "min_consecutive_dbrs": {"type": "integer", "description": "Min consecutive matching days (default 2)"},
                         "min_dbr": {"type": "integer", "description": "Minimum DBR (Days Before/After Release) to consider for similarity. e.g., -10 for 10 days before release."},
                         "max_dbr": {"type": "integer", "description": "Maximum DBR (Days Before/After Release) to consider for similarity. e.g., 30 for 30 days after release."}
                     },
@@ -327,7 +327,7 @@ STRICT INSTRUCTIONS FOR PARAMETERS:
    - Examples:
      * "minimum 3 consecutive DBR" -> min_consecutive_dbrs=3
      * "at least 10 DBR" -> min_consecutive_dbrs=10
-   - Default: min_consecutive_dbrs=6 if not mentioned
+   - Default: min_consecutive_dbrs=2 if not mentioned
    - EXCEPTION: If the user specifies a SHORT range (e.g., "first week", "range -5 to 5"), use a lower value like min_consecutive_dbrs=3 to ensure results are found.
 
 3. EXTRACTING 'max_growth_diff' (PERCENTAGE HANDLING):
@@ -359,7 +359,7 @@ STRICT INSTRUCTIONS FOR PARAMETERS:
 
 6. COMPLETE EXAMPLES:
    - Input: "Find similar movies to Twisters"
-     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "k": 5, "max_growth_diff": 1, "min_consecutive_dbrs": 6}}}}
+     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "k": 5, "max_growth_diff": 1, "min_consecutive_dbrs": 2}}}}
    
    - Input: "How did Twisters perform in the first week?"
      Output: {{"tool": "get_movie_performance", "parameters": {{"movie_name": "Twisters", "min_dbr": 0, "max_dbr": 7}}}}
@@ -368,16 +368,16 @@ STRICT INSTRUCTIONS FOR PARAMETERS:
      Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "min_dbr": 0, "max_dbr": 7, "k": 5, "max_growth_diff": 1, "min_consecutive_dbrs": 3}}}}
 
    - Input: "Find top 50 similar movies to Twisters with 2% diff"
-     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "k": 50, "max_growth_diff": 2, "min_consecutive_dbrs": 6}}}}
+     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "k": 50, "max_growth_diff": 2, "min_consecutive_dbrs": 2}}}}
    
    - Input: "Show me 20 movies like Inception with at least 5 DBR"
      Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Inception", "k": 20, "max_growth_diff": 1, "min_consecutive_dbrs": 5}}}}
    
    - Input: "Get top 10 movies with 5% difference"
-     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "movies", "k": 10, "max_growth_diff": 5, "min_consecutive_dbrs": 6}}}}
+     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "movies", "k": 10, "max_growth_diff": 5, "min_consecutive_dbrs": 2}}}}
    
    - Input: "Find similar movies to Twisters in range -5 to 5"
-     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "min_dbr": -5, "max_dbr": 5, "k": 5, "max_growth_diff": 1, "min_consecutive_dbrs": 6}}}}
+     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "min_dbr": -5, "max_dbr": 5, "k": 5, "max_growth_diff": 1, "min_consecutive_dbrs": 2}}}}
 """
 
         try:
@@ -641,38 +641,38 @@ IMPORTANT: You MUST mention ALL movies listed in the Tool Result Summary above. 
             return f"Error: Ollama API failed with status {response.status_code}"
         except Exception as e:
             return f"Error: {str(e)}"
-similarity_agent = MovieSimilarityAgent()
+# similarity_agent = MovieSimilarityAgent()
 
-# def main():
-#     agent = MovieSimilarityAgent()
-#
-#     print("="*80)
-#     print("🤖 AGENTIC MOVIE SIMILARITY (Tool Calling)")
-#     print("="*80)
-#     print("💡 Example Queries:")
-#     print("   1. 'Top 10 similar movies to Twisters'")
-#     print("   2. 'Find strict matches for Zootopia 2 (0.5% diff)'")
-#     print("   3. 'Find broadly similar movies to The Black Phone (loose match)'")
-#     print("   4. 'Compare Twisters and Wish with 2% tolerance'")
-#     print("   5. 'How is 3almashi similar to The Black Phone?'")
-#     print("="*80)
-#
-#     while True:
-#         try:
-#             query = input("\n💬 You: ").strip()
-#             if query.lower() in ['exit', 'quit']: break
-#             if not query: continue
-#
-#             print("Thinking...")
-#             result = agent.process_query(query)
-#
-#             if result['error']:
-#                 print(f"\n❌ Error: {result['error']}")
-#             else:
-#                 print(f"\n🤖 Agent:\n{result['message']}")
-#
-#         except KeyboardInterrupt:
-#             break
-#
-# if __name__ == "__main__":
-#     main()
+def main():
+    agent = MovieSimilarityAgent()
+
+    print("="*80)
+    print("🤖 AGENTIC MOVIE SIMILARITY (Tool Calling)")
+    print("="*80)
+    print("💡 Example Queries:")
+    print("   1. 'Top 10 similar movies to Twisters'")
+    print("   2. 'Find strict matches for Zootopia 2 (0.5% diff)'")
+    print("   3. 'Find broadly similar movies to The Black Phone (loose match)'")
+    print("   4. 'Compare Twisters and Wish with 2% tolerance'")
+    print("   5. 'How is 3almashi similar to The Black Phone?'")
+    print("="*80)
+
+    while True:
+        try:
+            query = input("\n💬 You: ").strip()
+            if query.lower() in ['exit', 'quit']: break
+            if not query: continue
+
+            print("Thinking...")
+            result = agent.process_query(query)
+
+            if result['error']:
+                print(f"\n❌ Error: {result['error']}")
+            else:
+                print(f"\n🤖 Agent:\n{result['message']}")
+
+        except KeyboardInterrupt:
+            break
+
+if __name__ == "__main__":
+    main()
