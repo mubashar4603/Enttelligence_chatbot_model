@@ -641,38 +641,38 @@ IMPORTANT: You MUST mention ALL movies listed in the Tool Result Summary above. 
             return f"Error: Ollama API failed with status {response.status_code}"
         except Exception as e:
             return f"Error: {str(e)}"
-# similarity_agent = MovieSimilarityAgent()
+similarity_agent = MovieSimilarityAgent()
 
-def main():
-    agent = MovieSimilarityAgent()
+# def main():
+#     agent = MovieSimilarityAgent()
 
-    print("="*80)
-    print("🤖 AGENTIC MOVIE SIMILARITY (Tool Calling)")
-    print("="*80)
-    print("💡 Example Queries:")
-    print("   1. 'Top 10 similar movies to Twisters'")
-    print("   2. 'Find strict matches for Zootopia 2 (0.5% diff)'")
-    print("   3. 'Find broadly similar movies to The Black Phone (loose match)'")
-    print("   4. 'Compare Twisters and Wish with 2% tolerance'")
-    print("   5. 'How is 3almashi similar to The Black Phone?'")
-    print("="*80)
+#     print("="*80)
+#     print("🤖 AGENTIC MOVIE SIMILARITY (Tool Calling)")
+#     print("="*80)
+#     print("💡 Example Queries:")
+#     print("   1. 'Top 10 similar movies to Twisters'")
+#     print("   2. 'Find strict matches for Zootopia 2 (0.5% diff)'")
+#     print("   3. 'Find broadly similar movies to The Black Phone (loose match)'")
+#     print("   4. 'Compare Twisters and Wish with 2% tolerance'")
+#     print("   5. 'How is 3almashi similar to The Black Phone?'")
+#     print("="*80)
 
-    while True:
-        try:
-            query = input("\n💬 You: ").strip()
-            if query.lower() in ['exit', 'quit']: break
-            if not query: continue
+#     while True:
+#         try:
+#             query = input("\n💬 You: ").strip()
+#             if query.lower() in ['exit', 'quit']: break
+#             if not query: continue
 
-            print("Thinking...")
-            result = agent.process_query(query)
+#             print("Thinking...")
+#             result = agent.process_query(query)
 
-            if result['error']:
-                print(f"\n❌ Error: {result['error']}")
-            else:
-                print(f"\n🤖 Agent:\n{result['message']}")
+#             if result['error']:
+#                 print(f"\n❌ Error: {result['error']}")
+#             else:
+#                 print(f"\n🤖 Agent:\n{result['message']}")
 
-        except KeyboardInterrupt:
-            break
+#         except KeyboardInterrupt:
+#             break
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
