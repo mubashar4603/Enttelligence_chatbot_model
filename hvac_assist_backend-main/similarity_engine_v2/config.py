@@ -62,6 +62,10 @@ METRIC_WEIGHTS = {
 # Tolerance thresholds for daily growth differences
 TOLERANCE_THRESHOLDS = [1.0, 2.0, 5.0, 10.0]  # Percentage differences to track
 
+# ==================== DBR MATCHING MODES ====================
+ENABLE_PERCENTAGE_MATCHING = True  # Toggle between percentage and consecutive count modes
+MIN_PERCENTAGE_THRESHOLD = 50.0      # Minimum % of DBRs that must match (used in percentage mode)
+
 # ==================== CACHING ====================
 ENABLE_CACHE = True
 MAX_CACHE_SIZE = 10000       # Maximum number of cached search results

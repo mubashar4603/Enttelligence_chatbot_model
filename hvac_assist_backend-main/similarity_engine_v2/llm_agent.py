@@ -184,15 +184,40 @@ class MovieSimilarityAgent:
             max_dbr=max_dbr
         )
         
-        # Sort by total matching DBRs (descending) and take top k
-        results.sort(key=lambda x: sum(r['dbr_count'] for r in x['matching_ranges']), reverse=True)
-        top_results = results[:k]
-        
-        return json.dumps({
-            "status": "success",
-            "query_movie": target,
-            "results": top_results
-        })
+        # Check if percentage mode is enabled
+        if config.ENABLE_PERCENTAGE_MATCHING:
+            # Percentage mode - results is a dict with 'high_similarity' and 'low_similarity'
+            high_sim = results.get('high_similarity', [])
+            low_sim = results.get('low_similarity', [])
+            
+            # Sort high similarity by percentage (descending) and take top k
+            high_sim.sort(key=lambda x: x.get('match_percentage', 0), reverse=True)
+            top_high = high_sim[:k]
+            
+            # Sort low similarity by percentage (descending)
+            low_sim.sort(key=lambda x: x.get('match_percentage', 0), reverse=True)
+            
+            return json.dumps({
+                "status": "success",
+                "mode": "percentage",
+                "query_movie": target,
+                "total_query_dbrs": results.get('total_query_dbrs', 0),
+                "high_similarity": top_high,
+                "low_similarity": low_sim
+            })
+        else:
+            # Consecutive mode - results is a list
+            # Sort by total matching DBRs (descending) and take top k
+            results.sort(key=lambda x: sum(r['dbr_count'] for r in x['matching_ranges']), reverse=True)
+            top_results = results[:k]
+            
+            return json.dumps({
+                "status": "success",
+                "mode": "consecutive",
+                "query_movie": target,
+                "results": top_results
+            })
+
     def _find_best_match(self, partial_name: str) -> Optional[str]:
         """Helper to find exact movie title"""
         if not partial_name: return None
@@ -396,24 +421,77 @@ STRICT INSTRUCTIONS FOR PARAMETERS:
                             try:
                                 res_json = json.loads(result)
                                 if res_json.get("status") == "success":
-                                    # 1. Create DataFrame for User Table
-                                    df = self.finder.export_to_dataframe(res_json['query_movie'], res_json['results'])
-                                    table_str = df.to_markdown(index=False)
+                                    mode = res_json.get("mode", "consecutive")
                                     
-                                    # 2. Create Ultra-Compact Context for LLM (Just movie names and total DBR count)
-                                    for item in res_json['results']:
-                                        total_dbr_count = sum(r['dbr_count'] for r in item['matching_ranges'])
-                                        # Get the overall range
-                                        all_dbr_starts = [r['dbr_start'] for r in item['matching_ranges']]
-                                        all_dbr_ends = [r['dbr_end'] for r in item['matching_ranges']]
-                                        min_dbr = min(all_dbr_starts)
-                                        max_dbr = max(all_dbr_ends)
+                                    if mode == "percentage":
+                                        # Percentage mode - create two tables
+                                        high_sim = res_json.get('high_similarity', [])
+                                        low_sim = res_json.get('low_similarity', [])
+                                        total_query_dbrs = res_json.get('total_query_dbrs', 0)
                                         
-                                        llm_context_data.append({
-                                            "movie": item['similar_movie'],
-                                            "total_matching_dbrs": total_dbr_count,
-                                            "dbr_range": f"{min_dbr} to {max_dbr}"
-                                        })
+                                        # Table 1: High Similarity (≥50%)
+                                        if high_sim:
+                                            df_high = self.finder.export_to_dataframe_with_percentage(
+                                                res_json['query_movie'], 
+                                                high_sim, 
+                                                include_details=True
+                                            )
+                                            table_high = df_high.to_markdown(index=False)
+                                        else:
+                                            table_high = "No movies found with ≥50% match"
+                                        
+                                        # Table 2: Low Similarity (1-49%)
+                                        if low_sim:
+                                            df_low = self.finder.export_to_dataframe_with_percentage(
+                                                res_json['query_movie'], 
+                                                low_sim, 
+                                                include_details=False
+                                            )
+                                            table_low = df_low.to_markdown(index=False)
+                                        else:
+                                            table_low = "No movies found with 1-49% match"
+                                        
+                                        # Combine tables
+                                        table_str = f"## High Similarity (≥50% DBR Match)\n\n{table_high}\n\n## Low Similarity (1-49% DBR Match)\n\n{table_low}"
+                                        
+                                        # Create context for LLM with percentage info
+                                        for item in high_sim:
+                                            match_pct = item.get('match_percentage', 0)
+                                            total_matching = item.get('total_matching_dbrs', 0)
+                                            matched_dbrs = item.get('matched_dbrs', [])
+                                            
+                                            # Get DBR ranges
+                                            dbr_ranges = []
+                                            for r in item['matching_ranges']:
+                                                dbr_ranges.append(f"{r['dbr_start']} to {r['dbr_end']}")
+                                            
+                                            llm_context_data.append({
+                                                "movie": item['similar_movie'],
+                                                "match_percentage": match_pct,
+                                                "total_matching_dbrs": total_matching,
+                                                "total_query_dbrs": total_query_dbrs,
+                                                "dbr_ranges": ", ".join(dbr_ranges),
+                                                "sample_matched_dbrs": str(matched_dbrs[:10]) if len(matched_dbrs) > 10 else str(matched_dbrs)
+                                            })
+                                    else:
+                                        # Consecutive mode (original behavior)
+                                        df = self.finder.export_to_dataframe(res_json['query_movie'], res_json['results'])
+                                        table_str = df.to_markdown(index=False)
+                                        
+                                        # Create Ultra-Compact Context for LLM (Just movie names and total DBR count)
+                                        for item in res_json['results']:
+                                            total_dbr_count = sum(r['dbr_count'] for r in item['matching_ranges'])
+                                            # Get the overall range
+                                            all_dbr_starts = [r['dbr_start'] for r in item['matching_ranges']]
+                                            all_dbr_ends = [r['dbr_end'] for r in item['matching_ranges']]
+                                            min_dbr = min(all_dbr_starts)
+                                            max_dbr = max(all_dbr_ends)
+                                            
+                                            llm_context_data.append({
+                                                "movie": item['similar_movie'],
+                                                "total_matching_dbrs": total_dbr_count,
+                                                "dbr_range": f"{min_dbr} to {max_dbr}"
+                                            })
                             except:
                                 pass
                                 
@@ -477,7 +555,37 @@ STRICT INSTRUCTIONS FOR PARAMETERS:
                             
                         # 3. Send result back to LLM for final analysis
                         # Use ultra-compact context to save tokens and ensure all results are acknowledged
-                        final_prompt = f"""
+                        
+                        # Check if percentage mode is active
+                        is_percentage_mode = config.ENABLE_PERCENTAGE_MATCHING
+                        
+                        if is_percentage_mode:
+                            final_prompt = f"""
+User Query: {user_query}
+Tool Result Summary: {json.dumps(llm_context_data, indent=2)}
+
+⚠️ CRITICAL: Do NOT make up or hallucinate any movie names. ONLY use the movies listed in the Tool Result Summary above.
+If the Tool Result Summary is empty [], that means NO similar movies were found. In that case, clearly state "No similar movies were found" and DO NOT list any movies.
+
+PERCENTAGE MATCHING MODE:
+The system is using percentage-based matching. Each result shows:
+- match_percentage: What percentage of the query movie's DBRs matched (consecutively)
+- total_matching_dbrs: How many DBRs matched
+- total_query_dbrs: Total DBRs in the query movie
+- dbr_ranges: Which DBR ranges matched
+
+Please interpret these results for the user:
+IMPORTANT: You MUST mention ALL movies listed in the Tool Result Summary above. Do not skip any movie.
+- For each movie, mention the match percentage and total matching DBRs.
+- Explain which DBR ranges matched (dbr_ranges field).
+- Explain that the matching DBRs must be consecutive for similarity.
+- Explicitly state that Negative DBR means "Days Before Release" and Positive DBR means "Days After Release".
+- DO NOT mention Total Revenue.
+- DO NOT fabricate or suggest movies that are not in the Tool Result Summary.
+- Be concise but comprehensive - mention every single movie in the results.
+"""
+                        else:
+                            final_prompt = f"""
 User Query: {user_query}
 Tool Result Summary: {json.dumps(llm_context_data, indent=2)}
 
