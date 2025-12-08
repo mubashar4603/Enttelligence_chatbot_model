@@ -7,7 +7,8 @@ import os
 # ==================== PATHS ====================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # DATA_PATH = os.path.join(os.path.dirname(BASE_DIR), "similarity_engine", "AI_Data_Dump_with_Growth.csv")
-DATA_PATH = os.path.join(os.path.dirname(BASE_DIR), "similarity_engine_v2", "AI_Data_Dump_1203_with_Growth.csv")
+# DATA_PATH = os.path.join(os.path.dirname(BASE_DIR), "similarity_engine_v2", "AI_Data_Dump_1205.csv")
+DATA_PATH = os.path.join(os.path.dirname(BASE_DIR), "similarity_engine_v2", "AI_Data_Dump_1203_with_Growth_CAL.csv")
 CACHE_DIR = os.path.join(BASE_DIR, "cache")
 GRAPHS_DIR = os.path.join(BASE_DIR, "graphs")
 

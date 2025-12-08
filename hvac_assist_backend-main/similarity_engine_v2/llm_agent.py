@@ -49,7 +49,7 @@ class MovieSimilarityAgent:
 
     # ==================== TOOLS ====================
     
-    def search_similar_movies(self, movie_name: str, k: int = 5, max_growth_diff: float = 1.0, min_consecutive_dbrs: int = 3) -> str:
+    def search_similar_movies(self, movie_name: str, k: int = 5, max_growth_diff: float = 1.0, min_consecutive_dbrs: int = 1) -> str:
         """
         Tool to find similar movies based on DBR growth patterns.
         
@@ -167,7 +167,7 @@ class MovieSimilarityAgent:
             "total_revenue": movie_data['total_revenue']
         })
 
-    def search_similar_movies(self, movie_name: str, k: int = 5, max_growth_diff: float = 1.0, min_consecutive_dbrs: int = 2, min_dbr: int = None, max_dbr: int = None) -> str:
+    def search_similar_movies(self, movie_name: str, k: int = 5, max_growth_diff: float = 1.0, min_consecutive_dbrs: int = 1, min_dbr: int = None, max_dbr: int = None) -> str:
         """
         Search for similar movies based on DBR growth patterns, optionally within a specific DBR range.
         Returns a JSON string with the results.
@@ -255,7 +255,7 @@ class MovieSimilarityAgent:
                         "movie_name": {"type": "string", "description": "Name of the movie to search for"},
                         "k": {"type": "integer", "description": "Number of movies to return (default 5)"},
                         "max_growth_diff": {"type": "number", "description": "Max allowed difference in growth percentage (default 1.0)"},
-                        "min_consecutive_dbrs": {"type": "integer", "description": "Min consecutive matching days (default 2)"},
+                        "min_consecutive_dbrs": {"type": "integer", "description": "Min consecutive matching days (default 1)"},
                         "min_dbr": {"type": "integer", "description": "Minimum DBR (Days Before/After Release) to consider for similarity. e.g., -10 for 10 days before release."},
                         "max_dbr": {"type": "integer", "description": "Maximum DBR (Days Before/After Release) to consider for similarity. e.g., 30 for 30 days after release."}
                     },
@@ -359,25 +359,25 @@ STRICT INSTRUCTIONS FOR PARAMETERS:
 
 6. COMPLETE EXAMPLES:
    - Input: "Find similar movies to Twisters"
-     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "k": 5, "max_growth_diff": 1, "min_consecutive_dbrs": 2}}}}
+     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "k": 5, "max_growth_diff": 1, "min_consecutive_dbrs": 1}}}}
    
    - Input: "How did Twisters perform in the first week?"
      Output: {{"tool": "get_movie_performance", "parameters": {{"movie_name": "Twisters", "min_dbr": 0, "max_dbr": 7}}}}
    
    - Input: "Which movies are similar to Twisters in the first week?"
-     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "min_dbr": 0, "max_dbr": 7, "k": 5, "max_growth_diff": 1, "min_consecutive_dbrs": 3}}}}
+     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "min_dbr": 0, "max_dbr": 7, "k": 5, "max_growth_diff": 1, "min_consecutive_dbrs": 1}}}}
 
    - Input: "Find top 50 similar movies to Twisters with 2% diff"
-     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "k": 50, "max_growth_diff": 2, "min_consecutive_dbrs": 2}}}}
+     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "k": 50, "max_growth_diff": 2, "min_consecutive_dbrs": 1}}}}
    
    - Input: "Show me 20 movies like Inception with at least 5 DBR"
      Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Inception", "k": 20, "max_growth_diff": 1, "min_consecutive_dbrs": 5}}}}
    
    - Input: "Get top 10 movies with 5% difference"
-     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "movies", "k": 10, "max_growth_diff": 5, "min_consecutive_dbrs": 2}}}}
+     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "movies", "k": 10, "max_growth_diff": 5, "min_consecutive_dbrs": 1}}}}
    
    - Input: "Find similar movies to Twisters in range -5 to 5"
-     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "min_dbr": -5, "max_dbr": 5, "k": 5, "max_growth_diff": 1, "min_consecutive_dbrs": 2}}}}
+     Output: {{"tool": "search_similar_movies", "parameters": {{"movie_name": "Twisters", "min_dbr": -5, "max_dbr": 5, "k": 5, "max_growth_diff": 1, "min_consecutive_dbrs": 1}}}}
 """
 
         try:
