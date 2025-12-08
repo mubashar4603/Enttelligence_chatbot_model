@@ -59,7 +59,7 @@ class DBRSpecificSimilarity:
         
         # Build DBR to growth mapping for query
         query_dbr_growth = {}
-        for i, dbr in enumerate(query_dbrs[:-1]):  # -1 because growth is diff
+        for i, dbr in enumerate(query_dbrs):  # Growth already has correct length
             # Apply Range Filtering
             if min_dbr is not None and dbr < min_dbr:
                 continue
@@ -85,7 +85,7 @@ class DBRSpecificSimilarity:
             
             # Build DBR to growth mapping for candidate
             cand_dbr_growth = {}
-            for i, dbr in enumerate(cand_dbrs[:-1]):
+            for i, dbr in enumerate(cand_dbrs):  # Growth already has correct length
                 # Apply Range Filtering
                 if min_dbr is not None and dbr < min_dbr:
                     continue
