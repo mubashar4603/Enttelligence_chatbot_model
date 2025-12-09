@@ -224,7 +224,9 @@ CORS_URLS_REGEX = r"^/api/.*$"
 # CSRF_TRUSTED_ORIGINS and CORS_ORIGIN_WHITELIST from environment variables (comma-separated)
 CSRF_TRUSTED_ORIGINS = os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',') if os.getenv('CSRF_TRUSTED_ORIGINS') else [
     'http://localhost:3000',
+    'http://localhost:3001',
     'http://127.0.0.1:3000',
+    'http://127.0.0.1:3001',
     'http://localhost:4200',
     'http://127.0.0.1:4200',
     'http://0.0.0.0:3000',
@@ -238,7 +240,9 @@ CSRF_TRUSTED_ORIGINS = os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',') if os.ge
 
 CORS_ORIGIN_WHITELIST = os.getenv('CORS_ORIGIN_WHITELIST', '').split(',') if os.getenv('CORS_ORIGIN_WHITELIST') else [
      'http://localhost:3000',
+     'http://localhost:3001',
      'http://127.0.0.1:3000',
+     'http://127.0.0.1:3001',
      'http://localhost:4200',
      'http://127.0.0.1:4200',
      'http://0.0.0.0:3000',

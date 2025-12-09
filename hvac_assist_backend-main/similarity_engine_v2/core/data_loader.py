@@ -30,8 +30,12 @@ class DataLoader:
             try:
                 df = pd.read_csv(self.data_path, encoding='utf-8')
             except (UnicodeDecodeError, pd.errors.ParserError):
-                # Fall back to UTF-16 with tab separator (for original files)
-                df = pd.read_csv(self.data_path, encoding='utf-16', sep='\t')
+                # Fall back to UTF-16 (try comma separator first, then tab)
+                try:
+                    df = pd.read_csv(self.data_path, encoding='utf-16')
+                except (UnicodeDecodeError, pd.errors.ParserError):
+                    # Try UTF-16 with tab separator (for some original files)
+                    df = pd.read_csv(self.data_path, encoding='utf-16', sep='\t')
             
             if config.VERBOSE:
                 print(f"   Loaded {len(df)} rows")
