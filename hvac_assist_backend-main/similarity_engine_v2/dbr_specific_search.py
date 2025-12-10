@@ -18,6 +18,24 @@ class DBRSpecificSimilarity:
         self.metadata = metadata
         self.title_to_id = {meta['title']: meta['movie_id'] for meta in metadata}
     
+    def _is_movie_released(self, movie_title: str) -> bool:
+        """
+        Determine if a movie has been released.
+        A movie is released if it has at least one POSITIVE DBR value.
+        
+        Args:
+            movie_title: Title of the movie
+            
+        Returns:
+            bool: True if movie has positive DBRs (released), False otherwise
+        """
+        if movie_title not in self.movies_db:
+            return False
+        
+        dbr_list = self.movies_db[movie_title]['dbr_list']
+        # Check if any DBR is positive (> 0)
+        return any(dbr > 0 for dbr in dbr_list)
+    
     def find_dbr_specific_matches(
         self,
         query_movie: str,
@@ -69,17 +87,35 @@ class DBRSpecificSimilarity:
             if i < len(query_growth):
                 query_dbr_growth[dbr] = query_growth[i]
         
+        
         # Total DBRs in query (for percentage calculation)
         total_query_dbrs = len(query_dbr_growth)
+        
+        # ========== PRE-FILTER CANDIDATE POOL BASED ON RELEASE STATUS ==========
+        # Determine release status of query movie
+        query_is_released = self._is_movie_released(query_movie)
+        
+        # Create filtered candidate pool
+        candidate_pool = {}
+        for title, data in self.movies_db.items():
+            if title == query_movie:
+                continue  # Skip query movie itself
+            
+            # If query is released, only include released candidates
+            if query_is_released:
+                if self._is_movie_released(title):
+                    candidate_pool[title] = data
+            else:
+                # If query is unreleased, include ALL movies
+                candidate_pool[title] = data
+        # =======================================================================
         
         # Find matches for each DBR
         results = []
         
-        # Check each candidate movie
-        for cand_title, cand_data in self.movies_db.items():
-            if cand_title == query_movie:
-                continue
-            
+        # Check each candidate movie (now using filtered pool)
+        for cand_title, cand_data in candidate_pool.items():
+
             cand_dbrs = cand_data['dbr_list']
             cand_growth = cand_data['growth_raw']
             
