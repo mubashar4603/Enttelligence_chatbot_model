@@ -4,6 +4,7 @@ Uses Ollama (Llama 3) to dynamically select tools and parameters
 """
 
 import json
+from decimal import Decimal
 import requests
 import pandas as pd
 from typing import Dict, Any, List, Optional
@@ -16,6 +17,14 @@ import os
 import similarity_engine_v2.config as config
 import re
 
+# Import analytical agent
+try:
+    from chat.intelligent_film_analytics_agent import get_intelligent_agent as get_analytical_agent
+    ANALYTICAL_AGENT_AVAILABLE = True
+except ImportError:
+    ANALYTICAL_AGENT_AVAILABLE = False
+    print("⚠️  Analytical agent not available")
+
 class MovieSimilarityAgent:
     """
     Agent that uses LLM tool calling to interact with the similarity engine.
@@ -23,6 +32,7 @@ class MovieSimilarityAgent:
     
     def __init__(self):
         self.finder = None
+        self.analytical_agent = None
         self._initialize_system()
         
     def _initialize_system(self):
@@ -46,6 +56,12 @@ class MovieSimilarityAgent:
         
         self.finder = DBRSpecificSimilarity(movies_db, metadata)
         print("✅ Engine Ready!\n")
+    
+    def _get_analytical_agent(self):
+        """Lazy initialization of analytical agent"""
+        if self.analytical_agent is None and ANALYTICAL_AGENT_AVAILABLE:
+            self.analytical_agent = get_analytical_agent()
+        return self.analytical_agent
 
     # ==================== TOOLS ====================
     
@@ -166,6 +182,45 @@ class MovieSimilarityAgent:
             "performance": filtered_data,
             "total_revenue": movie_data['total_revenue']
         })
+    
+    def query_analytical_engine(self, query: str) -> str:
+        """
+        Tool to query the analytical engine for:
+        - Revenue, sales, earnings analysis
+        - Theater information (locations, showtimes, capacity)
+        - Market opportunities and predictions
+        - Movie information (plot, actors, director)
+        - Database queries (how many, list all, show me)
+        
+        Returns exact response from analytical agent as JSON string.
+        """
+        if not ANALYTICAL_AGENT_AVAILABLE:
+            return json.dumps({
+                "error": "Analytical engine is not available. Please check system configuration."
+            })
+        
+        try:
+            agent = self._get_analytical_agent()
+            if agent is None:
+                return json.dumps({
+                    "error": "Failed to initialize analytical agent."
+                })
+            
+            # Call analytical agent and get response
+            result = agent.process_intelligent_query(query)
+            
+            # Return the result as JSON string
+            def decimal_serializer(obj):
+                if isinstance(obj, Decimal):
+                    return float(obj)
+                raise TypeError(f"Type {type(obj)} not serializable")
+
+            return json.dumps(result, default=decimal_serializer)
+            
+        except Exception as e:
+            return json.dumps({
+                "error": f"Analytical engine error: {str(e)}"
+            })
 
     def search_similar_movies(self, movie_name: str, k: int = 5, max_growth_diff: float = 1.0, min_consecutive_dbrs: int = 1, min_dbr: int = None, max_dbr: int = None) -> str:
         """
@@ -248,7 +303,7 @@ class MovieSimilarityAgent:
         tools_def = [
             {
                 "name": "search_similar_movies",
-                "description": "Finds movies with similar box office growth patterns. Use this for queries like 'similar to X', 'top 10 like X'.",
+                "description": "Finds movies with similar box office growth patterns. Use this for queries like 'similar to X', 'top 10 like X'.Example: 'what are the compareable titles of twisters. what are the similar titles of twisters'",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -286,6 +341,24 @@ class MovieSimilarityAgent:
                         "max_dbr": {"type": "integer", "description": "Maximum DBR (Days Before/After Release) to include in the performance data. e.g., 30 for 30 days after release."}
                     },
                     "required": ["movie_name"]
+                }
+            },
+            {
+                "name": "query_analytical_engine",
+                "description": """Query the analytical engine for questions about:
+- Revenue, sales, earnings analysis (e.g., 'What is the revenue for Dune?')
+- Theater information (e.g., 'Show me theaters in New York', 'How many theaters?')
+- Market opportunities and predictions (e.g., 'Where are market opportunities?')
+- Movie information from database (e.g., 'Tell me about Twisters plot', 'Who are the actors?')
+- General database queries (e.g., 'List all movies', 'How many seats available?', Which movies are currently in their first weekend (DIR -1 to DIR 3)?)
+
+Use this when the query does NOT ask for similarity/comparison between movies.""",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "User's original query to send to analytical engine"}
+                    },
+                    "required": ["query"]
                 }
             }
         ]
@@ -353,9 +426,16 @@ STRICT INSTRUCTIONS FOR PARAMETERS:
    - IMPORTANT: These range parameters apply to BOTH `get_movie_performance` AND `search_similar_movies`.
 
 5. TOOL SELECTION GUIDELINES:
-   - Use `get_movie_performance` when user asks about a SINGLE movie's performance (e.g., "How did Twisters perform in the first week?").
-   - Use `search_similar_movies` when user asks for SIMILAR movies (e.g., "Which movies performed like Twisters in the first week?").
-   - Use `compare_movies` when user asks to COMPARE two specific movies.
+   - Use `get_movie_performance` when user asks about a SINGLE movie's DBR-based performance data (e.g., "How did Twisters perform in the first week by DBR?").
+   - Use `search_similar_movies` when user asks for SIMILAR movies based on growth patterns (e.g., "Which movies performed like Twisters?").
+   - Use `compare_movies` when user asks to COMPARE two specific movies' growth patterns.
+   - Use `query_analytical_engine` when user asks about:
+     * Revenue, sales, earnings (not DBR-specific growth)
+     * Theaters, showtimes, locations
+     * Market opportunities, predictions
+     * Movie information (plot, actors, director)
+     * General database queries (how many, list all, show me)
+     * ANY analytical question that is NOT about similarity/comparison
 
 6. COMPLETE EXAMPLES:
    - Input: "Find similar movies to Twisters"
@@ -552,6 +632,25 @@ STRICT INSTRUCTIONS FOR PARAMETERS:
                                         llm_context_data = []
                             except:
                                 pass
+                        
+                        elif tool_name == "query_analytical_engine":
+                            # Call analytical engine directly
+                            result = self.query_analytical_engine(**params)
+                            try:
+                                res_json = json.loads(result)
+                                
+                                # Check for error
+                                if "error" in res_json:
+                                    return {"message": "", "error": res_json["error"]}
+                                
+                                # Analytical agent returns a complete response dict
+                                # with 'message', 'type', 'data', etc.
+                                # Return it directly without further LLM processing
+                                return res_json
+                                
+                            except json.JSONDecodeError:
+                                # If not JSON, return as error
+                                return {"message": "", "error": f"Invalid response from analytical engine: {result}"}
                             
                         # 3. Send result back to LLM for final analysis
                         # Use ultra-compact context to save tokens and ensure all results are acknowledged
@@ -645,7 +744,7 @@ similarity_agent = MovieSimilarityAgent()
 
 # def main():
 #     agent = MovieSimilarityAgent()
-
+#
 #     print("="*80)
 #     print("🤖 AGENTIC MOVIE SIMILARITY (Tool Calling)")
 #     print("="*80)
@@ -656,23 +755,23 @@ similarity_agent = MovieSimilarityAgent()
 #     print("   4. 'Compare Twisters and Wish with 2% tolerance'")
 #     print("   5. 'How is 3almashi similar to The Black Phone?'")
 #     print("="*80)
-
+#
 #     while True:
 #         try:
 #             query = input("\n💬 You: ").strip()
 #             if query.lower() in ['exit', 'quit']: break
 #             if not query: continue
-
+#
 #             print("Thinking...")
 #             result = agent.process_query(query)
-
-#             if result['error']:
+#
+#             if result.get('error', ''):
 #                 print(f"\n❌ Error: {result['error']}")
 #             else:
 #                 print(f"\n🤖 Agent:\n{result['message']}")
-
+#
 #         except KeyboardInterrupt:
 #             break
-
+#
 # if __name__ == "__main__":
 #     main()
