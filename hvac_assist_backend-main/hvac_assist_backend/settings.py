@@ -53,6 +53,8 @@ PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
 
 # Application definition
 
+
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -68,9 +70,33 @@ INSTALLED_APPS = [
     'accounts',
     'chat',
     'admin_dashboard',
-    'corsheaders',  # Added for CORS
-    'movies',  # Added movies app
+    'corsheaders',
+    'movies.apps.MoviesConfig', # Explicit app config to fix duplicate path issue
+    'django_crontab', # Added for pipeline scheduling
 ]
+
+# ... existing middleware ...
+
+# Cronjobs Schedule (Times converted from IST to UTC)
+# IST is UTC+5:30
+# 11:15 AM IST -> 05:45 UTC
+# 7:00 PM IST -> 13:30 UTC
+# 8:00 PM IST -> 14:30 UTC
+# 9:00 PM IST -> 15:30 UTC
+# 10:00 PM IST -> 16:30 UTC
+# 4:00 AM IST -> 22:30 UTC (Previous Day)
+
+CRONJOBS = [
+    ('*/2 * * * *', 'django.core.management.call_command', ['run_data_pipeline']), # Test Cron: Every 2 minutes
+    ('45 5 * * *', 'django.core.management.call_command', ['run_data_pipeline']),
+    ('30 13 * * *', 'django.core.management.call_command', ['run_data_pipeline']),
+    ('30 14 * * *', 'django.core.management.call_command', ['run_data_pipeline']),
+    ('30 15 * * *', 'django.core.management.call_command', ['run_data_pipeline']),
+    ('30 16 * * *', 'django.core.management.call_command', ['run_data_pipeline']),
+    ('30 22 * * *', 'django.core.management.call_command', ['run_data_pipeline']),
+]
+
+# ... existing settings ...
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',  # Added for CORS

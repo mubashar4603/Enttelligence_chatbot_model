@@ -30,33 +30,57 @@ class MovieSimilarityAgent:
     Agent that uses LLM tool calling to interact with the similarity engine.
     """
     
+
     def __init__(self):
         self.finder = None
         self.analytical_agent = None
+        self.last_cache_update = 0 # Track timestamp of cache
         self._initialize_system()
         
     def _initialize_system(self):
-        """Initialize the underlying similarity engine"""
-        print("🔧 Initializing Similarity Engine...")
+        """Initialize the underlying similarity engine from CACHE ONLY"""
+        print("🔧 Initializing Similarity Engine (Cache Mode)...")
         
-        # Check cache
-        if os.path.exists(config.CACHE_FILES['movies_db']) and os.path.exists(config.CACHE_FILES['metadata']):
-            with open(config.CACHE_FILES['movies_db'], 'rb') as f:
-                movies_db = pickle.load(f)
-            with open(config.CACHE_FILES['metadata'], 'rb') as f:
-                metadata = pickle.load(f)
+        # Check cache files
+        cache_files = [config.CACHE_FILES['movies_db'], config.CACHE_FILES['metadata']]
+        if all(os.path.exists(f) for f in cache_files):
+            try:
+                self._load_from_cache()
+                print("✅ Engine Loaded from Cache!\n")
+            except Exception as e:
+                print(f"❌ Failed to load cache: {e}")
+                print("⚠️ Please run the data pipeline to generate cache.")
         else:
-            print("🔨 Building from scratch...")
-            loader = DataLoader()
-            df = loader.load()
-            preprocessor = MoviePreprocessor(df)
-            movies_db = preprocessor.process_all_movies()
-            builder = VectorBuilder(movies_db)
-            _, metadata = builder.build_embeddings()
-        
+            print("⚠️ Cache not found. Please run 'python manage.py run_data_pipeline' to build the index.")
+            # Do NOT build from scratch automatically to respect pipeline arch
+            
+    def _load_from_cache(self):
+        """Helper to load data from check-pointed cache files"""
+        print("📦 Loading cache files...")
+        with open(config.CACHE_FILES['movies_db'], 'rb') as f:
+            movies_db = pickle.load(f)
+        with open(config.CACHE_FILES['metadata'], 'rb') as f:
+            metadata = pickle.load(f)
+            
         self.finder = DBRSpecificSimilarity(movies_db, metadata)
-        print("✅ Engine Ready!\n")
-    
+        
+        # Update timestamp tracking
+        self.last_cache_update = os.path.getmtime(config.CACHE_FILES['metadata'])
+
+    def _check_for_updates(self):
+        """Check if cache file has been modified and reload if necessary"""
+        try:
+            if not os.path.exists(config.CACHE_FILES['metadata']):
+                return
+
+            current_mtime = os.path.getmtime(config.CACHE_FILES['metadata'])
+            if current_mtime > self.last_cache_update:
+                print("\n🔄 New data detected! Reloading cache...")
+                self._load_from_cache()
+                print("✅ Cache reloaded successfully.\n")
+        except Exception as e:
+            print(f"⚠️ Error checking for updates: {e}")
+
     def _get_analytical_agent(self):
         """Lazy initialization of analytical agent"""
         if self.analytical_agent is None and ANALYTICAL_AGENT_AVAILABLE:
@@ -291,14 +315,17 @@ class MovieSimilarityAgent:
     def process_query(self, user_query: str) -> Dict[str, str]:
         """
         Main loop:
-        1. Send query + tool definitions to LLM
-        2. LLM decides tool call
-        3. Execute tool
-        4. Send result back to LLM for final answer
+        1. Check for data updates
+        2. Send query + tool definitions to LLM
+        3. LLM decides tool call
+        4. Execute tool
+        5. Send result back to LLM for final answer
         
         Returns:
             Dict with 'message' and 'error' keys
         """
+        # Auto-reload check
+        self._check_for_updates()
         
         tools_def = [
             {
@@ -772,6 +799,6 @@ similarity_agent = MovieSimilarityAgent()
 #
 #         except KeyboardInterrupt:
 #             break
-#
+
 # if __name__ == "__main__":
 #     main()

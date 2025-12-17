@@ -65,6 +65,7 @@ class DataLoader:
             'DBR': 'dbr',
             'Sales Estimate': 'daily_revenue',
             'Cuml. Sales Estimate': 'cumulative_revenue',
+            'Cuml Sales Estimate': 'cumulative_revenue', # Added support for dot-less version
             'Growth (%)': 'growth_pct'
         }
         
