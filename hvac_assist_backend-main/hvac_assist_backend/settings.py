@@ -87,7 +87,7 @@ INSTALLED_APPS = [
 # 4:00 AM IST -> 22:30 UTC (Previous Day)
 
 CRONJOBS = [
-    ('*/2 * * * *', 'django.core.management.call_command', ['run_data_pipeline']), # Test Cron: Every 2 minutes
+    # ('*/2 * * * *', 'django.core.management.call_command', ['run_data_pipeline']), # Test Cron: Every 2 minutes
     ('45 5 * * *', 'django.core.management.call_command', ['run_data_pipeline']),
     ('30 13 * * *', 'django.core.management.call_command', ['run_data_pipeline']),
     ('30 14 * * *', 'django.core.management.call_command', ['run_data_pipeline']),
