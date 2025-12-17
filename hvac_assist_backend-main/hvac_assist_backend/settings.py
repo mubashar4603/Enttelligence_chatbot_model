@@ -181,6 +181,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
@@ -262,6 +263,8 @@ CSRF_TRUSTED_ORIGINS = os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',') if os.ge
     'https://7aef6f1c9a16.ngrok-free.app',
     'http://18.220.241.7',
     'https://18.220.241.7',
+    'https://api2.insightlix.com',
+    'https://enttelligence-ai-chatbot-one.vercel.app'
 ]
 
 CORS_ORIGIN_WHITELIST = os.getenv('CORS_ORIGIN_WHITELIST', '').split(',') if os.getenv('CORS_ORIGIN_WHITELIST') else [
@@ -277,6 +280,8 @@ CORS_ORIGIN_WHITELIST = os.getenv('CORS_ORIGIN_WHITELIST', '').split(',') if os.
      'https://18.220.241.7',
      'https://hvac-delta.vercel.app',
      'https://7aef6f1c9a16.ngrok-free.app',
+     'https://api2.insightlix.com',
+     'https://enttelligence-ai-chatbot-one.vercel.app'
  ]
 # print(CORS_ORIGIN_WHITELIST)
 #CORS_ALLOW_CREDENTIALS = True
